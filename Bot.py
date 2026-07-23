@@ -130,17 +130,13 @@ def main():
 
     print(f"✅ 掃描完成！共找到 {len(taiwan_flights)} 架降落台灣的目標班機。")
 
+    # 👈 正式環境邏輯：只有真正有抓到目標飛機時，才會發送 Discord 警報卡片！
     if taiwan_flights:
-        # 有目標飛機時發送真實警報
         send_discord_webhook(taiwan_flights)
-    else:
-        # 沒目標飛機時，強制發送連線成功測試！
-        test_data = [{
-            "f_num": "SYSTEM_CHECK",
-            "f_reg": "OK",
-            "route": "連線測試成功！目前空中無目標飛機降落台灣。",
-        }]
-        send_discord_webhook(test_data)
+
+
+if __name__ == "__main__":
+    main()
 
 
 if __name__ == "__main__":
