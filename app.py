@@ -436,7 +436,7 @@ if auto_refresh:
         f"""
         <script>
             setTimeout(function(){{
-                window.parent.postMessage({{type: 'streamlit:render'}, '*'});
+                window.parent.postMessage({{type: 'streamlit:render'}}, '*');
                 window.parent.location.reload();
             }}, {refresh_interval * 1000});
         </script>
