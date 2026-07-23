@@ -141,7 +141,6 @@ def search_single_target_cached(target_raw: str, _all_flights):
         getattr(f, "id", ""): f for f in _all_flights if getattr(f, "id", "")
     }
 
-    # 1. 第一優先：比對空中廣播池 (速度極快)
     for flight in _all_flights:
         f_num = (getattr(flight, "number", "") or "").upper()
         f_callsign = (getattr(flight, "callsign", "") or "").upper()
@@ -187,7 +186,6 @@ def search_single_target_cached(target_raw: str, _all_flights):
                     "_is_taiwan": is_taiwan,
                 }
 
-    # 2. 第二優先：廣播沒抓到時，才調用 Web 搜尋 API 補查
     time.sleep(0.3)
     search_url = (
         f"https://www.flightradar24.com/v1/search/web/find?query={target_raw}"
@@ -257,11 +255,10 @@ def search_single_target_cached(target_raw: str, _all_flights):
 
 # --- 3. UI 介面與側邊欄設定 ---
 st.title("✈️ FlightRadar24 智慧航班與降落台灣監測 APP")
-st.caption("🟢 完全免費 / 免 API Key | 支援「全量掃描」與「僅針對未找到目標精準補查」")
+st.caption("🟢 完全免費 / 免 API Key | 具備精準補查未命中目標機制")
 
-# Session State 初始化
 if "matched_dict" not in st.session_state:
-    st.session_state["matched_dict"] = {}  # key: 監控目標, value: result_dict
+    st.session_state["matched_dict"] = {}
 
 raw_default_flights = """B-KQU
 B-LRJ
@@ -321,7 +318,7 @@ with st.sidebar:
     st.info("💡 支援輸入「航班號」或「機身編號/註冊號」")
 
     flight_input = st.text_area(
-        "飛機代碼清單 (每行一班)", value=clean_default_flights, height=260
+        "飛機代碼清單 (每行一班)", value=clean_default_flights, height=280
     )
 
     targets = [f.strip().upper() for f in flight_input.split("\n") if f.strip()]
@@ -332,28 +329,17 @@ with st.sidebar:
 
     st.divider()
 
-    # 按鈕 1: 全量重新掃描
-    full_scan = st.button(
-        "🔄 全量重新掃描 (清空舊資料)",
-        type="primary",
-        use_container_width=True,
-    )
-
-    # 按鈕 2: 僅針對未查到的目標重新掃描
+    # 保留唯一按鈕：僅補查未找到的目標
     unmatched_count = len(currently_unmatched)
     rescan_unmatched = st.button(
         f"⚡ 僅重新掃描「未查到」目標 ({unmatched_count} 架)",
-        type="secondary",
+        type="primary",
         use_container_width=True,
         disabled=(unmatched_count == 0),
     )
 
-    if st.button("🧹 手動清除 API 快取"):
-        st.cache_data.clear()
-        st.toast("已清除 API 快取！")
 
-
-# 掃描執行邏輯函式
+# 掃描執行邏輯
 def run_scan_process(scan_targets: list[str], is_full_rescan: bool = False):
     if is_full_rescan:
         st.session_state["matched_dict"] = {}
@@ -362,7 +348,6 @@ def run_scan_process(scan_targets: list[str], is_full_rescan: bool = False):
     progress_bar = st.progress(0)
 
     status_info.info("📡 正獲取 FlightRadar24 最新全球空域數據...")
-    # 強制重拉最新廣播
     fetch_all_active_flights.clear()
     snapshot = fetch_all_active_flights()
 
@@ -372,7 +357,6 @@ def run_scan_process(scan_targets: list[str], is_full_rescan: bool = False):
         status_info.empty()
         return
 
-    # 若是針對未查到目標進行補查，清除該些目標的舊快取
     search_single_target_cached.clear()
 
     total = len(scan_targets)
@@ -389,8 +373,8 @@ def run_scan_process(scan_targets: list[str], is_full_rescan: bool = False):
     status_info.empty()
 
 
-# 觸發判斷
-if full_scan or "has_run_once" not in st.session_state:
+# 觸發邏輯：首次開啟時執行一次全量掃描，之後僅響應補查按鈕
+if "has_run_once" not in st.session_state:
     st.session_state["has_run_once"] = True
     run_scan_process(targets, is_full_rescan=True)
 elif rescan_unmatched and currently_unmatched:
@@ -480,7 +464,6 @@ if not df_matched.empty:
 
     st.subheader("🟢 在空中/飛行中航班詳細清單")
 
-    # 排序：降落台灣優先 -> 監控目標
     df_sorted = (
         df_matched.sort_values(
             by=["_is_taiwan", "監控目標"], ascending=[False, True]
