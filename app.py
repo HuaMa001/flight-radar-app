@@ -7,7 +7,7 @@ from FlightRadarAPI import FlightRadar24API
 
 # --- 1. 頁面基本設定與初始化 ---
 st.set_page_config(
-    page_title="FlightRadar24 智慧航班監測 APP",
+    page_title="FlightRadar24監測",
     page_icon="✈️",
     layout="wide",
 )
@@ -254,8 +254,8 @@ def search_single_target_cached(target_raw: str, _all_flights):
 
 
 # --- 3. UI 介面與側邊欄設定 ---
-st.title("✈️ FlightRadar24 智慧航班與降落台灣監測 APP")
-st.caption("🟢 完全免費 / 免 API Key | 點擊表格清單可自動跳轉定位至地圖位置")
+st.title("✈️ FlightRadar24 監測 ")
+st.caption("點擊表格清單可自動跳轉定位至地圖位置")
 
 if "matched_dict" not in st.session_state:
     st.session_state["matched_dict"] = {}
@@ -315,7 +315,7 @@ clean_default_flights = "\n".join(
 
 with st.sidebar:
     st.header("⚙️ 監控清單")
-    st.info("💡 支援輸入「航班號」或「機身編號/註冊號」")
+    st.info("💡 輸入機身編號")
 
     flight_input = st.text_area(
         "飛機代碼清單 (每行一班)", value=clean_default_flights, height=280
