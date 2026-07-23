@@ -1,39 +1,308 @@
-import os
 from concurrent.futures import ThreadPoolExecutor, as_completed
+import os
 import requests
 from FlightRadarAPI import FlightRadar24API
 
-# 讀取名為 DISCORD 的 GitHub Secret
-DISCORD_WEBHOOK_URL = os.getenv("DISCORD", os.getenv("DISCORD_WEBHOOK_URL", ""))
+# 1. 讀取 GitHub Secrets 金鑰 (支援 DISCORD_WEBHOOK_URL 與 DISCORD 兩種命名)
+DISCORD_WEBHOOK_URL = os.getenv(
+    "DISCORD_WEBHOOK_URL", os.getenv("DISCORD", "")
+)
 
-# 監控目標清單
+# 2. 監控目標清單 (機身號 / 註冊號 / 航班號)
 TARGETS = [
-    "9M-LRU","B-KQU", "B-LRJ", "B-LJE", "HL7628", "B-18918", "B-18311", "B-18007", "B-5390",
-    "JA872A", "B-17812", "B-16715", "JA880A", "JA731A", "JA875A", "JA614A", "9V-SWI",
-    "9V-SWJ", "B-2032", "B-6091", "B-6093", "HL7732", "HL8071", "HS-TKQ", "HL7783",
-    "VN-A897", "VN-A327", "B-6538", "PK-GMH", "PH-BVD", "9V-OJJ", "JA73AB", "JA894A",
-    "B-18101", "A6-EXR", "A6-EES", "A6-EET", "A6-EEP", "A6-DDE", "A6-BLV", "A6-BMH",
-    "LX-NCL", "LX-VCF", "HL7423", "HL7419", "JA12KZ", "N771CK", "N454PA", "N249BA"
+    "9M-LRU",
+    "B-KQU",
+    "B-LRJ",
+    "B-LJE",
+    "HL7628",
+    "B-18918",
+    "B-18311",
+    "B-18007",
+    "B-5390",
+    "JA872A",
+    "B-17812",
+    "B-16715",
+    "JA880A",
+    "JA731A",
+    "JA875A",
+    "JA614A",
+    "9V-SWI",
+    "9V-SWJ",
+    "B-2032",
+    "B-6091",
+    "B-6093",
+    "HL7732",
+    "HL8071",
+    "HS-TKQ",
+    "HL7783",
+    "VN-A897",
+    "VN-A327",
+    "B-6538",
+    "PK-GMH",
+    "PH-BVD",
+    "9V-OJJ",
+    "JA73AB", "JA894A",
+    "B-18101",
+    "A6-EXR",
+    "A6-EES",
+    "A6-EET",
+    "A6-EEP",
+    "A6-DDE",
+    "A6-BLV",
+    "A6-BMH",
+    "LX-NCL",
+    "LX-VCF",
+    "HL7423",
+    "HL7419",
+    "JA12KZ",
+    "N771CK",
+    "N454PA",
+    "N249BA",
 ]
 
 fr_api = FlightRadar24API()
 
 
 def check_is_taiwan(text_or_code: str) -> bool:
+    """判斷機場代碼或名稱是否屬於台灣"""
     if not text_or_code or text_or_code == "未知":
         return False
     s = str(text_or_code).upper()
     tw_keywords = [
-        "RC", "TPE", "TSA", "KHH", "RMQ", "TNN", "HUN", "TTT", "MZG", "KIN",
-        "TAIPEI", "TAIWAN", "KAOHSIUNG"
+        "RC",
+        "TPE",
+        "TSA",
+        "KHH",
+        "RMQ",
+        "TNN",
+        "HUN",
+        "TTT",
+        "MZG",
+        "KIN",
+        "TAIPEI",
+        "TAIWAN",
+        "KAOHSIUNG",
     ]
     return any(kw in s for kw in tw_keywords)
 
 
+def fetch_direct_clickhandler(flight_obj_or_id) -> dict | None:
+    """向 API 索取詳細飛行狀態與起降機場資訊"""
+    try:
+        if hasattr(flight_obj_or_id, "id"):
+            details = fr_api.get_flight_details(flight_obj_or_id)
+        else:
+
+            class DummyFlight:
+
+                def __init__(self, fid):
+                    self.id = fid
+
+            details = fr_api.get_flight_details(DummyFlight(flight_obj_or_id))
+
+        if not details or not isinstance(details, dict):
+            return None
+
+        airport = details.get("airport") or {}
+        orig_obj = (airport.get("origin") or {}).get("code") or {}
+        dest_obj = (airport.get("destination") or {}).get("code") or {}
+
+        origin = (
+            orig_obj.get("iata")
+            or orig_obj.get("icao")
+            or (airport.get("origin") or {}).get("name")
+            or "未知"
+        )
+        destination = (
+            dest_obj.get("iata")
+            or dest_obj.get("icao")
+            or (airport.get("destination") or {})
+            .get("pluginData", {})
+            .get("details", {})
+            .get("name")
+            or "未知"
+        )
+
+        ident = details.get("identification") or {}
+        f_num = (
+            (ident.get("number") or {}).get("default")
+            or (ident.get("callsign") or {}).get("default")
+            or "未知"
+        )
+
+        ac = details.get("aircraft") or {}
+        f_reg = ac.get("registration") or "未知"
+
+        return {
+            "origin": origin,
+            "destination": destination,
+            "f_num": f_num,
+            "f_reg": f_reg,
+        }
+    except Exception:
+        return None
+
+
+def search_single_target(
+    target_raw: str, all_flights: list, flight_map_by_id: dict
+) -> dict | None:
+    """移植自 app.py 的雙階段搜尋 Worker"""
+    target_clean = target_raw.replace("-", "")
+
+    # 階段 1：直播廣播數據直接比對 (比對呼號、機號、航班號)
+    for flight in all_flights:
+        f_num = (getattr(flight, "number", "") or "").upper()
+        f_callsign = (getattr(flight, "callsign", "") or "").upper()
+        f_reg = (getattr(flight, "registration", "") or "").upper()
+
+        matched = target_raw in [f_num, f_callsign, f_reg] or target_clean in [
+            f_num.replace("-", ""),
+            f_callsign.replace("-", ""),
+            f_reg.replace("-", ""),
+        ]
+
+        if matched:
+            details = fetch_direct_clickhandler(flight)
+            if details:
+                dest = details["destination"]
+                is_tw = check_is_taiwan(dest)
+                return {
+                    "f_num": (
+                        details["f_num"]
+                        if details["f_num"] != "未知"
+                        else (f_num or f_callsign)
+                    ),
+                    "f_reg": (
+                        details["f_reg"]
+                        if details["f_reg"] != "未知"
+                        else (f_reg or target_raw)
+                    ),
+                    "route": f"{details['origin']} ➔ {dest}",
+                    "is_taiwan": is_tw,
+                }
+
+    # 階段 2：若廣播數據未抓到，調用 Web API 進行線上反查
+    search_url = (
+        f"https://www.flightradar24.com/v1/search/web/find?query={target_raw}"
+    )
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+            " (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        )
+    }
+
+    try:
+        res = requests.get(search_url, headers=headers, timeout=4)
+        if res.status_code == 200:
+            results = sorted(
+                res.json().get("results", []),
+                key=lambda x: (
+                    x.get("type") != "live",
+                    str(x.get("id", "")),
+                ),
+            )
+            for item in results:
+                if item.get("type") == "live":
+                    live_id = str(item.get("id", "")).strip()
+                    if live_id:
+                        target_obj = flight_map_by_id.get(live_id, live_id)
+                        details = fetch_direct_clickhandler(target_obj)
+
+                        if details:
+                            dest = details["destination"]
+                            is_tw = check_is_taiwan(dest)
+                            return {
+                                "f_num": (
+                                    details["f_num"]
+                                    if details["f_num"] != "未知"
+                                    else target_raw
+                                ),
+                                "f_reg": (
+                                    details["f_reg"]
+                                    if details["f_reg"] != "未知"
+                                    else target_raw
+                                ),
+                                "route": f"{details['origin']} ➔ {dest}",
+                                "is_taiwan": is_tw,
+                            }
+    except Exception:
+        pass
+
+    return None
+
+
 def send_discord_webhook(taiwan_flights: list):
-    # 除錯訊息
-    print(f"🔍 DEBUG: 當前讀取到的 Webhook 網址長度為: {len(DISCORD_WEBHOOK_URL)}")
-    
+    """專用 Discord 美化警報推播函式"""
+    if not DISCORD_WEBHOOK_URL:
+        print("⚠️ 未偵測到 DISCORD 金鑰設定，請檢查 GitHub Secrets！")
+        return
+
+    fields = []
+    for f in taiwan_flights:
+        fields.append({
+            "name": f"✈️ 航班：{f['f_num']} (機身號: {f['f_reg']})",
+            "value": f"📍 **航線：** {f['route']}",
+            "inline": False,
+        })
+
+    payload = {
+        "embeds": [{
+            "title": "🚨 FlightRadar24 彩繪機降落台灣警報",
+            "description": (
+                f"當前共有 **{len(taiwan_flights)}** 架目標班機預計或已降落台灣！"
+            ),
+            "color": 15158332,  # 警報紅色
+            "fields": fields,
+            "footer": {"text": "FlightRadar24 智慧航班監測系統"},
+        }]
+    }
+
+    try:
+        res = requests.post(DISCORD_WEBHOOK_URL, json=payload, timeout=5)
+        if res.status_code in [200, 204]:
+            print("✅ 成功發送 Discord Webhook 通知！")
+        else:
+            print(f"❌ Discord 發送失敗，HTTP 狀態碼: {res.status_code}")
+    except Exception as e:
+        print(f"❌ Discord 發送異常: {e}")
+
+
+def main():
+    print("🚀 開始掃描全球空域航班...")
+    snapshot = fr_api.get_flights() or []
+
+    # 建立 ID 對應表以利 Web API 快速索引
+    flight_map_by_id = {
+        getattr(f, "id", ""): f for f in snapshot if getattr(f, "id", "")
+    }
+
+    taiwan_flights = []
+
+    # 使用 8 個線程併行掃描
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        futures = {
+            executor.submit(
+                search_single_target, target, snapshot, flight_map_by_id
+            ): target
+            for target in TARGETS
+        }
+        for future in as_completed(futures):
+            res = future.result()
+            if res and res["is_taiwan"]:
+                taiwan_flights.append(res)
+
+    print(
+        f"✅ 掃描完成！共找到 {len(taiwan_flights)} 架降落台灣的目標班機。"
+    )
+
+    # 只有真正找到預計/降落台灣的班機時才發送
+    if taiwan_flights:
+        send_discord_webhook(taiwan_flights)
+
+
+if __name__ == "__main__":
+    main()
     if not DISCORD_WEBHOOK_URL:
         print("⚠️ 未偵測到 DISCORD 金鑰設定，請檢查 GitHub Secrets！")
         return
