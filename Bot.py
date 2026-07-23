@@ -3,10 +3,10 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import requests
 from FlightRadarAPI import FlightRadar24API
 
-# 👈 讀取名稱為 DISCORD 的 GitHub Secret
+# 讀取名為 DISCORD 的 GitHub Secret
 DISCORD_WEBHOOK_URL = os.getenv("DISCORD", os.getenv("DISCORD_WEBHOOK_URL", ""))
 
-# 監控目標清單 (機身號 / 註冊號)
+# 監控目標清單
 TARGETS = [
     "B-KQU", "B-LRJ", "B-LJE", "HL7628", "B-18918", "B-18311", "B-18007", "B-5390",
     "JA872A", "B-17812", "B-16715", "JA880A", "JA731A", "JA875A", "JA614A", "9V-SWI",
@@ -24,19 +24,8 @@ def check_is_taiwan(text_or_code: str) -> bool:
         return False
     s = str(text_or_code).upper()
     tw_keywords = [
-        "RC",
-        "TPE",
-        "TSA",
-        "KHH",
-        "RMQ",
-        "TNN",
-        "HUN",
-        "TTT",
-        "MZG",
-        "KIN",
-        "TAIPEI",
-        "TAIWAN",
-        "KAOHSIUNG",
+        "RC", "TPE", "TSA", "KHH", "RMQ", "TNN", "HUN", "TTT", "MZG", "KIN",
+        "TAIPEI", "TAIWAN", "KAOHSIUNG"
     ]
     return any(kw in s for kw in tw_keywords)
 
@@ -55,14 +44,11 @@ def send_discord_webhook(taiwan_flights: list):
             "inline": False,
         })
 
-    # 建立 Discord 嵌入式美化訊息 (Embed)
     payload = {
         "embeds": [{
             "title": "🚨 FlightRadar24 彩繪機降落台灣警報",
-            "description": (
-                f"當前共有 **{len(taiwan_flights)}** 架目標班機預計或已降落台灣！"
-            ),
-            "color": 15158332,  # 警報紅色
+            "description": f"當前共有 **{len(taiwan_flights)}** 架目標班機預計或已降落台灣！",
+            "color": 15158332,
             "fields": fields,
             "footer": {"text": "FlightRadar24 智慧航班監測系統"},
         }]
@@ -112,8 +98,7 @@ def scan_single_target(target, snapshot):
         f_num = (getattr(flight, "number", "") or "").upper()
         f_reg = (getattr(flight, "registration", "") or "").upper()
         if target in [f_num, f_reg] or target_clean in [
-            f_num.replace("-", ""),
-            f_reg.replace("-", ""),
+            f_num.replace("-", ""), f_reg.replace("-", "")
         ]:
             details = fetch_details(flight)
             if details:
@@ -136,25 +121,18 @@ def main():
             if res and res["is_taiwan"]:
                 taiwan_flights.append(res)
 
-    print(
-        f"✅ 掃描完成！共找到 {len(taiwan_flights)} 架降落台灣的目標班機。"
-    )
+    print(f"✅ 掃描完成！共找到 {len(taiwan_flights)} 架降落台灣的目標班機。")
 
     if taiwan_flights:
-        # 有抓到真正降落台灣的飛機時發送
         send_discord_webhook(taiwan_flights)
     else:
-        # 👈 沒抓到飛機時，也強制發送一則系統正常執行的回報！
+        # 👈 沒抓到飛機時，也會強制發送一則系統測試訊息到 Discord！
         test_data = [{
             "f_num": "SYSTEM_CHECK",
             "f_reg": "OK",
-            "route": "連線測試成功！目前空中無目標飛機降落台灣。",
+            "route": "連線成功！目前空中無目標飛機降落台灣。",
         }]
         send_discord_webhook(test_data)
-
-
-if __name__ == "__main__":
-    main()
 
 
 if __name__ == "__main__":
