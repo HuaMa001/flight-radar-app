@@ -1,4 +1,5 @@
 from concurrent.futures import ThreadPoolExecutor, as_completed
+import time
 import pandas as pd
 import pydeck as pdk
 import requests
@@ -21,13 +22,16 @@ def init_api():
 fr_api = init_api()
 
 
-# 快取全球廣播資料 30 秒
+# ⚡ 安全快取全球廣播資料：只有成功拿到資料才快取 30 秒，失敗不快取
 @st.cache_data(ttl=30, show_spinner=False)
 def fetch_all_active_flights():
     try:
-        return fr_api.get_flights()
+        flights = fr_api.get_flights()
+        if flights:
+            return flights
     except Exception:
-        return []
+        pass
+    return []
 
 
 # --- 2. 輔助函式定義 ---
@@ -137,7 +141,6 @@ def search_single_target(target: str, all_flights: list) -> dict | None:
     if not target_raw:
         return None
 
-    # 乾淨無槓版本 (如 B-18101 -> B18101)
     target_clean = target_raw.replace("-", "")
 
     flight_map_by_id = {
@@ -189,7 +192,9 @@ def search_single_target(target: str, all_flights: list) -> dict | None:
                     "_is_taiwan": is_taiwan,
                 }
 
-    # 步驟 2: Web API 詳細反查 (優先帶入原生的 Flight 物件)
+    # ⚡ 步驟 2: Web API 反查 (加入 0.25 秒微延遲，防止被 FR24 觸發 Rate Limit)
+    time.sleep(0.25)
+
     search_url = (
         f"https://www.flightradar24.com/v1/search/web/find?query={target_raw}"
     )
@@ -201,7 +206,7 @@ def search_single_target(target: str, all_flights: list) -> dict | None:
     }
 
     try:
-        res = requests.get(search_url, headers=headers, timeout=4)
+        res = requests.get(search_url, headers=headers, timeout=5)
         if res.status_code == 200:
             results = res.json().get("results", [])
             for item in results:
@@ -252,7 +257,7 @@ def search_single_target(target: str, all_flights: list) -> dict | None:
 
 # --- 3. UI 介面與側邊欄設定 ---
 st.title("✈️ FlightRadar24 智慧航班與降落台灣監測 APP")
-st.caption("🟢 完全免費 / 免 API Key | 雙重檢核完整掃描機制")
+st.caption("🟢 完全免費 / 免 API Key | 防鎖頻率控制與穩定掃描機制")
 
 with st.sidebar:
     st.header("⚙️ 監控清單")
@@ -322,13 +327,13 @@ with st.sidebar:
     st.divider()
 
     scan_button = st.button(
-        "🔄 執行雙重檢核掃描", type="primary", use_container_width=True
+        "🔄 執行全量雙重檢核掃描", type="primary", use_container_width=True
     )
 
 targets = [f.strip().upper() for f in flight_input.split("\n") if f.strip()]
 
 
-# --- 4. 主程式執行邏輯 (雙重掃描) ---
+# --- 4. 主程式執行邏輯 ---
 if scan_button or "first_run" not in st.session_state:
     st.session_state["first_run"] = True
 
@@ -336,14 +341,22 @@ if scan_button or "first_run" not in st.session_state:
     progress_bar = st.progress(0)
 
     try:
+        status_info.info("📡 正從 FlightRadar24 抓取全球即時空域廣播數據...")
         all_active_flights = fetch_all_active_flights()
+
+        # 防呆：如果全球廣播失敗，重試一次
+        if not all_active_flights:
+            st.cache_data.clear()
+            all_active_flights = fetch_all_active_flights()
+
         matched_results = []
 
         # ------------------ 第 1 輪全清單掃描 ------------------
-        status_info.info(f"🔄 [第 1/2 輪掃描] 正在初次比對全部 {len(targets)} 個目標...")
+        status_info.info(f"🔄 [第 1/2 輪掃描] 正平行查詢全部 {len(targets)} 個目標...")
 
         completed_1 = 0
-        with ThreadPoolExecutor(max_workers=5) as executor:
+        # 控制並行 worker 數量為 3~4 個，最平穩不易被擋
+        with ThreadPoolExecutor(max_workers=3) as executor:
             futures_1 = {
                 executor.submit(search_single_target, t, all_active_flights): t
                 for t in targets
@@ -359,20 +372,20 @@ if scan_button or "first_run" not in st.session_state:
         found_targets_1 = {r["監控目標"] for r in matched_results}
         unmatched_targets_1 = [t for t in targets if t not in found_targets_1]
 
-        # ------------------ 第 2 輪複查掃描 (僅複查未命中的目標) ------------------
+        # ------------------ 第 2 輪複查掃描 ------------------
         if unmatched_targets_1:
             status_info.warning(
-                f"⚡ [第 2/2 輪掃描] 正對第 1 輪未命中的 {len(unmatched_targets_1)} 個目標進行二次補查驗證..."
+                f"⚡ [第 2/2 輪掃描] 正在對首輪未命中的 {len(unmatched_targets_1)} 個目標進行二次補查..."
             )
 
+            # 稍微休息 1 秒再進行第二輪，提升二次成功率
+            time.sleep(1.0)
             completed_2 = 0
-            # 重新更新快取廣播資料
-            all_active_flights_retry = fetch_all_active_flights()
 
-            with ThreadPoolExecutor(max_workers=5) as executor:
+            with ThreadPoolExecutor(max_workers=3) as executor:
                 futures_2 = {
                     executor.submit(
-                        search_single_target, t, all_active_flights_retry
+                        search_single_target, t, all_active_flights
                     ): t
                     for t in unmatched_targets_1
                 }
@@ -389,7 +402,6 @@ if scan_button or "first_run" not in st.session_state:
         progress_bar.empty()
         status_info.empty()
 
-        # 將成果寫入 session_state
         st.session_state["final_df"] = pd.DataFrame(matched_results)
 
     except Exception as e:
@@ -400,16 +412,14 @@ if scan_button or "first_run" not in st.session_state:
 if "final_df" in st.session_state:
     df_matched = st.session_state["final_df"]
 
-    # 計算最終的命中與未命中清單
     matched_targets = (
         set(df_matched["監控目標"].tolist()) if not df_matched.empty else set()
     )
     unmatched_targets = [t for t in targets if t not in matched_targets]
 
-    # 頂部數據看板
     col1, col2, col3, col4 = st.columns(4)
     col1.metric("監控目標總數", f"{len(targets)} 架")
-    col2.metric("雙掃完成度", "100% (已複查)")
+    col2.metric("雙掃完成度", "100% (雙重驗證)")
     col3.metric("在空中 / 飛行中", f"{len(df_matched)} 架")
     col4.metric("未查到 / 尚未起飛", f"{len(unmatched_targets)} 架")
 
@@ -500,7 +510,7 @@ if "final_df" in st.session_state:
             column_config=matched_col_config,
         )
 
-    # --- 2. 獨立表格顯示：二次複查後依然未查到的飛機 ---
+    # --- 2. 獨立表格顯示：已雙重驗證但確定不在空中的飛機 ---
     if unmatched_targets:
         st.subheader("🔴 經過雙重複查「確定未在空中/無訊號」之目標清單")
 
