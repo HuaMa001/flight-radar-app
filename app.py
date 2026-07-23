@@ -428,7 +428,6 @@ else:
         display_df = df_matched.drop(columns=["lat", "lon", "_is_taiwan"]).copy()
         display_df.insert(0, "編號", range(1, len(display_df) + 1))
 
-        # ⚡ 明確指定每個欄位的像素寬度，精準控制欄位比例
         matched_col_config = {
             "編號": st.column_config.NumberColumn("編號", width=60, format="%d"),
             "監控目標": st.column_config.TextColumn("監控目標", width=110),
@@ -459,11 +458,11 @@ else:
             "當前狀態": "未在空中飛行 / 尚未起飛 / 應答機未開啟",
         })
 
-        # ⚡ 針對未查到表格，將「編號」設為 60px，「目標編號」設為 120px，剩餘空間全部讓給「當前狀態」
+        # ⚡ 關鍵修改：明確給予「當前狀態」超大寬度 (1000px)，迫使「編號」(60px) 與「目標編號」(120px) 緊縮在最左側
         unmatched_col_config = {
             "編號": st.column_config.NumberColumn("編號", width=60, format="%d"),
             "目標編號": st.column_config.TextColumn("目標編號", width=120),
-            "當前狀態": st.column_config.TextColumn("當前狀態"),  # 不限寬度，會自動填滿右側
+            "當前狀態": st.column_config.TextColumn("當前狀態", width=1000),
         }
 
         st.dataframe(
