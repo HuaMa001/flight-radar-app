@@ -141,11 +141,20 @@ def main():
     )
 
     if taiwan_flights:
+        # 有抓到真正降落台灣的飛機時發送
         send_discord_webhook(taiwan_flights)
+    else:
+        # 👈 沒抓到飛機時，也強制發送一則系統正常執行的回報！
+        test_data = [{
+            "f_num": "SYSTEM_CHECK",
+            "f_reg": "OK",
+            "route": "連線測試成功！目前空中無目標飛機降落台灣。",
+        }]
+        send_discord_webhook(test_data)
 
-    # 測試用強制發送通知（頻道收到測試訊息後，可將下面兩行刪除）
-    test_data = [{"f_num": "TEST888", "f_reg": "B-TEST", "route": "TPE ➔ KHH (連線測試成功)"}]
-    send_discord_webhook(test_data)
+
+if __name__ == "__main__":
+    main()
 
 
 if __name__ == "__main__":
