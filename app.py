@@ -337,15 +337,23 @@ with st.sidebar:
     # 按鈕 2: 僅補查未查到的目標
     unmatched_count = len(currently_unmatched)
     rescan_unmatched = st.button(
-        f"⚡ 僅補查「未查到」目標 ({unmatched_count} 架)",
+        f"⚡ 輪詢補查「未查到」至穩定 ({unmatched_count} 架)",
         type="secondary",
         use_container_width=True,
         disabled=(unmatched_count == 0),
     )
 
 
-# 掃描執行邏輯
-def run_scan_process(scan_targets: list[str], is_full_rescan: bool = False):
+# 🔄 新增：自動持續輪詢至數字穩定的掃描邏輯
+def run_scan_process_until_stable(
+    all_targets: list[str],
+    is_full_rescan: bool = False,
+    max_rounds: int = 5,
+    stable_threshold: int = 2,
+):
+    """
+    持續反覆查詢未查到的目標，直到「未查到數量」連續 stable_threshold 次沒有變化，或達到 max_rounds 止。
+    """
     if is_full_rescan:
         st.session_state["matched_dict"] = {}
 
@@ -354,6 +362,7 @@ def run_scan_process(scan_targets: list[str], is_full_rescan: bool = False):
 
     status_info.info("📡 正獲取 FlightRadar24 最新全球空域數據...")
     fetch_all_active_flights.clear()
+    search_single_target_cached.clear()
     snapshot = fetch_all_active_flights()
 
     if not snapshot:
@@ -362,17 +371,49 @@ def run_scan_process(scan_targets: list[str], is_full_rescan: bool = False):
         status_info.empty()
         return
 
-    search_single_target_cached.clear()
+    last_unmatched_count = -1
+    stable_counter = 0
 
-    total = len(scan_targets)
-    status_info.info(f"🔍 正精準掃描 {total} 個目標...")
+    for current_round in range(1, max_rounds + 1):
+        # 找出當前尚未比對成功的目標
+        matched_keys = set(st.session_state["matched_dict"].keys())
+        pending_targets = [t for t in all_targets if t not in matched_keys]
+        current_unmatched_count = len(pending_targets)
 
-    for i, target in enumerate(scan_targets):
-        res = search_single_target_cached(target, snapshot)
-        if res:
-            st.session_state["matched_dict"][target] = res
+        # 條件 1：如果全部目標都查到了，直接結束
+        if current_unmatched_count == 0:
+            status_info.success("🎉 所有監控目標皆已成功定位！")
+            break
 
-        progress_bar.progress((i + 1) / total)
+        # 條件 2：檢查未查到的數量是否與上一輪相同（判定穩定度）
+        if current_unmatched_count == last_unmatched_count:
+            stable_counter += 1
+        else:
+            stable_counter = 1
+            last_unmatched_count = current_unmatched_count
+
+        if stable_counter >= stable_threshold:
+            status_info.success(
+                f"✅ 未查到數量已連續 {stable_threshold} 輪維持在 {current_unmatched_count} 架，數據已達穩定狀態！"
+            )
+            time.sleep(1)
+            break
+
+        status_info.info(
+            f"🔄 第 {current_round}/{max_rounds} 輪掃描中... "
+            f"（剩餘未查到：{current_unmatched_count} 架 | 穩定計數：{stable_counter}/{stable_threshold}）"
+        )
+
+        total_pending = len(pending_targets)
+        for i, target in enumerate(pending_targets):
+            res = search_single_target_cached(target, snapshot)
+            if res:
+                st.session_state["matched_dict"][target] = res
+
+            progress_bar.progress((i + 1) / total_pending)
+
+        # 每輪之間微小休眠，降低請求過快被封鎖的風險
+        time.sleep(0.5)
 
     progress_bar.empty()
     status_info.empty()
@@ -381,21 +422,21 @@ def run_scan_process(scan_targets: list[str], is_full_rescan: bool = False):
 # 觸發邏輯處理
 if "has_run_once" not in st.session_state:
     st.session_state["has_run_once"] = True
-    run_scan_process(targets, is_full_rescan=True)
+    run_scan_process_until_stable(targets, is_full_rescan=True)
     st.rerun()
 
 elif full_search_button:
     if "flight_table" in st.session_state:
         del st.session_state["flight_table"]
 
-    run_scan_process(targets, is_full_rescan=True)
+    run_scan_process_until_stable(targets, is_full_rescan=True)
     st.rerun()
 
 elif rescan_unmatched and currently_unmatched:
     if "flight_table" in st.session_state:
         del st.session_state["flight_table"]
 
-    run_scan_process(currently_unmatched, is_full_rescan=False)
+    run_scan_process_until_stable(targets, is_full_rescan=False)
     st.rerun()
 
 
