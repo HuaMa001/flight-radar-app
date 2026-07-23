@@ -3,10 +3,8 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import requests
 from FlightRadarAPI import FlightRadar24API
 
-# 從 GitHub Secrets 讀取金鑰
+# 從環境變數讀取 Discord Webhook URL
 DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL", "")
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 
 # 監控目標清單 (機身號 / 註冊號)
 TARGETS = [
@@ -20,40 +18,79 @@ TARGETS = [
 
 fr_api = FlightRadar24API()
 
+
 def check_is_taiwan(text_or_code: str) -> bool:
     if not text_or_code or text_or_code == "未知":
         return False
     s = str(text_or_code).upper()
-    tw_keywords = ["RC", "TPE", "TSA", "KHH", "RMQ", "TNN", "HUN", "TTT", "MZG", "KIN", "TAIPEI", "TAIWAN", "KAOHSIUNG"]
+    tw_keywords = [
+        "RC",
+        "TPE",
+        "TSA",
+        "KHH",
+        "RMQ",
+        "TNN",
+        "HUN",
+        "TTT",
+        "MZG",
+        "KIN",
+        "TAIPEI",
+        "TAIWAN",
+        "KAOHSIUNG",
+    ]
     return any(kw in s for kw in tw_keywords)
 
-def send_notification(message: str):
-    if DISCORD_WEBHOOK_URL:
-        try:
-            requests.post(DISCORD_WEBHOOK_URL, json={"content": message}, timeout=5)
-        except Exception as e:
-            print(f"Discord 發送失敗: {e}")
 
-    if TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID:
-        try:
-            url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-            requests.post(url, json={"chat_id": TELEGRAM_CHAT_ID, "text": message, "parse_mode": "Markdown"}, timeout=5)
-        except Exception as e:
-            print(f"Telegram 發送失敗: {e}")
+def send_discord_webhook(taiwan_flights: list):
+    """專用 Discord Embed 卡片發送函式"""
+    if not DISCORD_WEBHOOK_URL:
+        print("⚠️ 未偵測到 DISCORD_WEBHOOK_URL 設定，跳過發送。")
+        return
+
+    fields = []
+    for f in taiwan_flights:
+        fields.append({
+            "name": f"✈️ 航班：{f['f_num']} (機身號: {f['f_reg']})",
+            "value": f"📍 **航線：** {f['route']}",
+            "inline": False,
+        })
+
+    # 建立 Discord 嵌入式美化訊息 (Embed)
+    payload = {
+        "embeds": [{
+            "title": "🚨 FlightRadar24 彩繪機降落台灣警報",
+            "description": (
+                f"當前共有 **{len(taiwan_flights)}** 架目標班機預計或已降落台灣！"
+            ),
+            "color": 15158332,  # 警報紅色
+            "fields": fields,
+            "footer": {"text": "FlightRadar24 智慧航班監測系統"},
+        }]
+    }
+
+    try:
+        res = requests.post(DISCORD_WEBHOOK_URL, json=payload, timeout=5)
+        if res.status_code in [200, 204]:
+            print("✅ 成功發送 Discord Webhook 通知！")
+        else:
+            print(f"❌ Discord 發送失敗，HTTP 狀態碼: {res.status_code}")
+    except Exception as e:
+        print(f"❌ Discord 發送異常: {e}")
+
 
 def fetch_details(flight_obj):
     try:
         details = fr_api.get_flight_details(flight_obj)
         if not details or not isinstance(details, dict):
             return None
-        
+
         airport = details.get("airport") or {}
         orig_obj = (airport.get("origin") or {}).get("code") or {}
         dest_obj = (airport.get("destination") or {}).get("code") or {}
 
         origin = orig_obj.get("iata") or orig_obj.get("icao") or "未知"
         destination = dest_obj.get("iata") or dest_obj.get("icao") or "未知"
-        
+
         ident = details.get("identification") or {}
         f_num = (ident.get("number") or {}).get("default") or "未知"
         ac = details.get("aircraft") or {}
@@ -63,21 +100,26 @@ def fetch_details(flight_obj):
             "f_num": f_num,
             "f_reg": f_reg,
             "route": f"{origin} ➔ {destination}",
-            "is_taiwan": check_is_taiwan(destination)
+            "is_taiwan": check_is_taiwan(destination),
         }
     except Exception:
         return None
+
 
 def scan_single_target(target, snapshot):
     target_clean = target.replace("-", "")
     for flight in snapshot:
         f_num = (getattr(flight, "number", "") or "").upper()
         f_reg = (getattr(flight, "registration", "") or "").upper()
-        if target in [f_num, f_reg] or target_clean in [f_num.replace("-", ""), f_reg.replace("-", "")]:
+        if target in [f_num, f_reg] or target_clean in [
+            f_num.replace("-", ""),
+            f_reg.replace("-", ""),
+        ]:
             details = fetch_details(flight)
             if details:
                 return details
     return None
+
 
 def main():
     print("🚀 開始掃描全球空域航班...")
@@ -85,21 +127,23 @@ def main():
     taiwan_flights = []
 
     with ThreadPoolExecutor(max_workers=8) as executor:
-        futures = {executor.submit(scan_single_target, target, snapshot): target for target in TARGETS}
+        futures = {
+            executor.submit(scan_single_target, target, snapshot): target
+            for target in TARGETS
+        }
         for future in as_completed(futures):
             res = future.result()
             if res and res["is_taiwan"]:
                 taiwan_flights.append(res)
 
-    print(f"✅ 掃描完成！共找到 {len(taiwan_flights)} 架降落台灣的目標班機。")
+    print(
+        f"✅ 掃描完成！共找到 {len(taiwan_flights)} 架降落台灣的目標班機。"
+    )
 
     if taiwan_flights:
-        msg = f"🚨 **【FlightRadar24 彩繪機降落台灣警報】**\n"
-        msg += f"當前共有 **{len(taiwan_flights)}** 架目標班機預計/已降落台灣：\n\n"
-        for f in taiwan_flights:
-            msg += f"✈️ **航班：** `{f['f_num']}` (註冊號: `{f['f_reg']}`)\n📍 **航線：** {f['route']}\n---\n"
-        send_notification(msg)
+        send_discord_webhook(taiwan_flights)
+
 
 if __name__ == "__main__":
     main()
-      
+    
