@@ -399,8 +399,7 @@ else:
                 <span style="font-size: 14px; font-weight: bold; color: #ff4b4b;">✈️ {航班號}</span> 
                 <span style="font-size: 12px; color: #aaa;">({機身註冊號})</span><br/>
                 <b>📍 航線:</b> {航線 (出發➔到達)}<br/>
-                <b>🛩️ 機型:</b> {機型}<br/>
-                <b>📏 高度:</b> {高度 (ft)} ft | <b>⚡ 地速:</b> {地速 (kts)} kts<br/>
+                <b>🛩️ 機型:</b> {機型}<br/>              
                 <b>🇹🇼 降落台灣:</b> {降落台灣}<br/>
                 <span style="font-size: 10px; color: #888;">來源: {資料來源}</span>
             </div>
