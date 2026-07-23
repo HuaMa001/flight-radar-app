@@ -349,10 +349,8 @@ current_idx = st.session_state["current_index"]
 matched_list = st.session_state["matched_results"]
 df_matched = pd.DataFrame(matched_list)
 
-# 計算「目前已查詢」的目標範圍
 checked_targets = targets[:current_idx]
 
-# 找出「已查詢但未找到（不在空中/未起飛）」的目標
 matched_targets = set(df_matched["監控目標"].tolist()) if not df_matched.empty else set()
 unmatched_targets = [t for t in checked_targets if t not in matched_targets]
 
@@ -404,7 +402,6 @@ else:
                 <span style="font-size: 12px; color: #aaa;">({機身註冊號})</span><br/>
                 <b>📍 航線:</b> {航線 (出發➔到達)}<br/>
                 <b>🛩️ 機型:</b> {機型}<br/>
-                <b>📏 高度:</b> {高度 (ft)} ft | <b>⚡ 地速:</b> {地速 (kts)} kts<br/>
                 <b>🇹🇼 降落台灣:</b> {降落台灣}<br/>
                 <span style="font-size: 10px; color: #888;">來源: {資料來源}</span>
             </div>
@@ -428,17 +425,22 @@ else:
         )
 
         st.subheader("🟢 在空中/飛行中航班詳細清單")
-        display_df = df_matched.drop(columns=["lat", "lon", "_is_taiwan"])
+        
+        # ⚡ 增加「編號」欄位（從 1 開始遞增）
+        display_df = df_matched.drop(columns=["lat", "lon", "_is_taiwan"]).copy()
+        display_df.insert(0, "編號", range(1, len(display_df) + 1))
+        
         st.dataframe(display_df, use_container_width=True, hide_index=True)
 
     # --- 2. 獨立表格顯示：已查詢但未查到的飛機 ---
     if unmatched_targets:
         st.subheader("🔴 已查詢但「未在空中/無訊號」之目標清單")
         
+        # ⚡ 增加「編號」欄位（從 1 開始遞增）
         df_unmatched = pd.DataFrame({
+            "編號": list(range(1, len(unmatched_targets) + 1)),
             "目標編號": unmatched_targets,
             "當前狀態": "未在空中飛行 / 尚未起飛 / 應答機未開啟",
-            "說明": "於 FlightRadar24 資料庫中未搜尋到即時動態資訊"
         })
         
         st.dataframe(
