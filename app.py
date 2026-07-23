@@ -21,6 +21,15 @@ def init_api():
 fr_api = init_api()
 
 
+# ⚡ 快取全球廣播資料 30 秒，大幅提升抓取成功率與速度，避免首查遺漏
+@st.cache_data(ttl=30, show_spinner=False)
+def fetch_all_active_flights():
+    try:
+        return fr_api.get_flights()
+    except Exception:
+        return []
+
+
 # --- 2. Session State 狀態初始化 ---
 if "current_index" not in st.session_state:
     st.session_state["current_index"] = 0
@@ -131,16 +140,33 @@ def fetch_direct_clickhandler(flight_obj_or_id) -> dict | None:
 
 
 def search_single_target(target: str, all_flights: list) -> dict | None:
-    target = target.strip().upper()
-    if not target:
+    target_raw = target.strip().upper()
+    if not target_raw:
         return None
 
+    # 乾淨無槓版本 (如 B-18101 -> B18101)
+    target_clean = target_raw.replace("-", "")
+
+    flight_map_by_id = {
+        getattr(f, "id", ""): f for f in all_flights if getattr(f, "id", "")
+    }
+
+    # 步驟 1: 全域廣播池雙重格式比對
     for flight in all_flights:
         f_num = (getattr(flight, "number", "") or "").upper()
         f_callsign = (getattr(flight, "callsign", "") or "").upper()
         f_reg = (getattr(flight, "registration", "") or "").upper()
 
-        if target in [f_num, f_callsign, f_reg]:
+        f_num_c = f_num.replace("-", "")
+        f_callsign_c = f_callsign.replace("-", "")
+        f_reg_c = f_reg.replace("-", "")
+
+        matched = (
+            target_raw in [f_num, f_callsign, f_reg]
+            or target_clean in [f_num_c, f_callsign_c, f_reg_c]
+        )
+
+        if matched:
             details = fetch_direct_clickhandler(flight)
             if details:
                 origin = details["origin"]
@@ -148,7 +174,7 @@ def search_single_target(target: str, all_flights: list) -> dict | None:
                 is_taiwan = check_is_taiwan(destination)
 
                 return {
-                    "監控目標": target,
+                    "監控目標": target_raw,
                     "航班號": (
                         details["f_num"]
                         if details["f_num"] != "未知"
@@ -157,7 +183,7 @@ def search_single_target(target: str, all_flights: list) -> dict | None:
                     "機身註冊號": (
                         details["f_reg"]
                         if details["f_reg"] != "未知"
-                        else (f_reg or target)
+                        else (f_reg or target_raw)
                     ),
                     "機型": details["ac_code"],
                     "航線 (出發➔到達)": f"{origin} ➔ {destination}",
@@ -170,8 +196,9 @@ def search_single_target(target: str, all_flights: list) -> dict | None:
                     "_is_taiwan": is_taiwan,
                 }
 
+    # 步驟 2: Web API 詳細反查 (優先帶入原生的 Flight 物件)
     search_url = (
-        f"https://www.flightradar24.com/v1/search/web/find?query={target}"
+        f"https://www.flightradar24.com/v1/search/web/find?query={target_raw}"
     )
     headers = {
         "User-Agent": (
@@ -188,28 +215,32 @@ def search_single_target(target: str, all_flights: list) -> dict | None:
                 if item.get("type") == "live":
                     live_id = str(item.get("id", "")).strip()
                     if live_id:
-                        details = fetch_direct_clickhandler(live_id)
+                        target_obj = flight_map_by_id.get(live_id, live_id)
+                        details = fetch_direct_clickhandler(target_obj)
+
                         if details:
                             origin = details["origin"]
                             destination = details["destination"]
                             is_taiwan = check_is_taiwan(destination)
 
                             return {
-                                "監控目標": target,
+                                "監控目標": target_raw,
                                 "航班號": (
                                     details["f_num"]
                                     if details["f_num"] != "未知"
-                                    else target
+                                    else target_raw
                                 ),
                                 "機身註冊號": (
                                     details["f_reg"]
                                     if details["f_reg"] != "未知"
-                                    else target
+                                    else target_raw
                                 ),
                                 "機型": details["ac_code"],
                                 "航線 (出發➔到達)": (
                                     f"{origin} ➔ {destination}"
                                 ),
+                                "高度 (ft)": details["alt"],
+                                "地速 (kts)": details["spd"],
                                 "降落台灣": (
                                     "🇹🇼 降落台灣"
                                     if is_taiwan
@@ -310,6 +341,7 @@ targets = [f.strip().upper() for f in flight_input.split("\n") if f.strip()]
 if reset_button:
     st.session_state["current_index"] = 0
     st.session_state["matched_results"] = []
+    st.cache_data.clear()  # 點重置時順便清空快取
     st.rerun()
 
 
@@ -325,7 +357,8 @@ if scan_5_button:
         with st.spinner(
             f"正在查詢第 {start_idx + 1} ~ {start_idx + len(batch_targets)} 個目標: {', '.join(batch_targets)} ..."
         ):
-            all_active_flights = fr_api.get_flights()
+            # ⚡ 改用快取函數取資料，極速又穩定
+            all_active_flights = fetch_all_active_flights()
 
             with ThreadPoolExecutor(
                 max_workers=len(batch_targets)
@@ -349,7 +382,9 @@ df_matched = pd.DataFrame(matched_list)
 
 checked_targets = targets[:current_idx]
 
-matched_targets = set(df_matched["監控目標"].tolist()) if not df_matched.empty else set()
+matched_targets = (
+    set(df_matched["監控目標"].tolist()) if not df_matched.empty else set()
+)
 unmatched_targets = [t for t in checked_targets if t not in matched_targets]
 
 # 頂部數據看板
@@ -399,7 +434,7 @@ else:
                 <span style="font-size: 14px; font-weight: bold; color: #ff4b4b;">✈️ {航班號}</span> 
                 <span style="font-size: 12px; color: #aaa;">({機身註冊號})</span><br/>
                 <b>📍 航線:</b> {航線 (出發➔到達)}<br/>
-                <b>🛩️ 機型:</b> {機型}<br/>              
+                <b>🛩️ 機型:</b> {機型}<br/>             
                 <b>🇹🇼 降落台灣:</b> {降落台灣}<br/>
                 <span style="font-size: 10px; color: #888;">來源: {資料來源}</span>
             </div>
@@ -424,16 +459,22 @@ else:
 
         st.subheader("🟢 在空中/飛行中航班詳細清單")
 
-        display_df = df_matched.drop(columns=["lat", "lon", "_is_taiwan"]).copy()
+        display_df = df_matched.drop(
+            columns=["lat", "lon", "_is_taiwan"]
+        ).copy()
         display_df.insert(0, "編號", range(1, len(display_df) + 1))
 
         matched_col_config = {
-            "編號": st.column_config.NumberColumn("編號", width=60, format="%d"),
+            "編號": st.column_config.NumberColumn(
+                "編號", width=60, format="%d"
+            ),
             "監控目標": st.column_config.TextColumn("監控目標", width=110),
             "航班號": st.column_config.TextColumn("航班號", width=100),
             "機身註冊號": st.column_config.TextColumn("機身註冊號", width=120),
             "機型": st.column_config.TextColumn("機型", width=90),
-            "航線 (出發➔到達)": st.column_config.TextColumn("航線 (出發➔到達)", width=220),
+            "航線 (出發➔到達)": st.column_config.TextColumn(
+                "航線 (出發➔到達)", width=220
+            ),
             "高度 (ft)": st.column_config.NumberColumn("高度 (ft)", width=100),
             "地速 (kts)": st.column_config.NumberColumn("地速 (kts)", width=100),
             "降落台灣": st.column_config.TextColumn("降落台灣", width=120),
@@ -457,9 +498,10 @@ else:
             "當前狀態": "未在空中飛行 / 尚未起飛 / 應答機未開啟",
         })
 
-        # ⚡ 關鍵修改：明確給予「當前狀態」超大寬度 (1000px)，迫使「編號」(60px) 與「目標編號」(120px) 緊縮在最左側
         unmatched_col_config = {
-            "編號": st.column_config.NumberColumn("編號", width=60, format="%d"),
+            "編號": st.column_config.NumberColumn(
+                "編號", width=60, format="%d"
+            ),
             "目標編號": st.column_config.TextColumn("目標編號", width=120),
             "當前狀態": st.column_config.TextColumn("當前狀態", width=1000),
         }
