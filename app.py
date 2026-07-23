@@ -349,7 +349,7 @@ def run_scan_process_until_stable(
     all_targets: list[str],
     is_full_rescan: bool = False,
     max_rounds: int = 10,
-    stable_threshold: int = 4,
+    stable_threshold: int = 10
     max_workers: int = 8,  # 同時開 8 個工作線程進行併行查詢
 ):
     if is_full_rescan:
