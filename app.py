@@ -33,7 +33,6 @@ def fetch_all_active_flights():
     return []
 
 
-# 建立全域 Session 以提升連線效率
 @st.cache_resource
 def get_http_session():
     session = requests.Session()
@@ -58,7 +57,7 @@ def check_is_taiwan(text_or_code: str) -> bool:
         # IATA (3碼)
         "TPE", "TSA", "KHH", "RMQ", "TNN", "HUN", "TTT", "MZG", "KIN", "CYI", "PIF", "LZN", "CMJ",
         # ICAO (4碼)
-        "RCTP", "RCSS", "RCKH", "RCMQ", "RCNN", "RCHU", "RCFG", "RCBS", "RCFN", "RCKW", "RCMT", "RCLY"
+        "RCTP", "RCSS", "RCKH", "RCMQ", "RCNN", "RCHU", "RCFG", "RCBS", "RCFN", "RCKW", "RCMT", "RCLY",
     }
 
     if s in tw_airport_codes:
@@ -69,7 +68,7 @@ def check_is_taiwan(text_or_code: str) -> bool:
 
     tw_name_keywords = [
         "TAIPEI", "TAIWAN", "KAOHSIUNG", "TAICHUNG", "TAINAN",
-        "台北", "台灣", "高雄", "台中", "台南"
+        "台北", "台灣", "高雄", "台中", "台南",
     ]
     return any(kw in s for kw in tw_name_keywords)
 
@@ -85,7 +84,10 @@ def fetch_planespotters_image(registration: str) -> str | None:
             data = res.json()
             photos = data.get("photos", [])
             if photos:
-                return photos[0].get("thumbnail_large", {}).get("src") or photos[0].get("thumbnail", {}).get("src")
+                return (
+                    photos[0].get("thumbnail_large", {}).get("src")
+                    or photos[0].get("thumbnail", {}).get("src")
+                )
     except Exception:
         pass
     return None
@@ -533,27 +535,27 @@ if not df_matched.empty:
                 zoom_level = 7.5
 
     st.subheader("🗺️ 飛機即時位置雷達地圖")
-    
+
     # 🎯 點擊航班時顯示詳細資訊與照片大圖
     if selected_row is not None:
         st.info(f"🎯 **已定位至航班：{selected_row['航班號']} ({selected_row['機身註冊號']})**")
-        
+
         detail_col1, detail_col2 = st.columns([1, 2])
         with detail_col1:
             if selected_row["機身照片"]:
                 st.image(selected_row["機身照片"], caption=f"機身註冊號：{selected_row['機身註冊號']}", use_container_width=True)
             else:
                 st.warning("📷 尚無此機身之公開照片庫資料")
-        
+
         with detail_col2:
-            st.markdown(f"""
-            - **航班號**：`{selected_row['航班號']}`
-            - **機身註冊號**：`{selected_row['機身註冊號']}`
-            - **機型**：`{selected_row['機型']}`
-            - **航線**：**{selected_row['航線 (出發➔到達)']}**
-            - **即時高度/速度**：`{selected_row['高度 (ft)']} ft` / `{selected_row['地速 (kts)']} kts`
-            - **降落台灣狀態**：{selected_row['降落台灣']}
-            """)
+            st.markdown(
+                f"- **航班號**：`{selected_row['航班號']}`\n"
+                f"- **機身註冊號**：`{selected_row['機身註冊號']}`\n"
+                f"- **機型**：`{selected_row['機型']}`\n"
+                f"- **航線**：**{selected_row['航線 (出發➔到達)']}**\n"
+                f"- **即時高度/速度**：`{selected_row['高度 (ft)']} ft` / `{selected_row['地速 (kts)']} kts`\n"
+                f"- **降落台灣狀態**：{selected_row['降落台灣']}"
+            )
         st.divider()
 
     layer = pdk.Layer(
@@ -622,7 +624,6 @@ if not df_matched.empty:
     display_df = df_sorted[ordered_cols].copy()
     display_df.insert(0, "編號", range(1, len(display_df) + 1))
 
-    # 🖼️ 使用 ImageColumn 讓縮圖直接內嵌於表格內
     matched_col_config = {
         "編號": st.column_config.NumberColumn("編號", width=50, format="%d"),
         "機身照片": st.column_config.ImageColumn("機身照片", width=90, help="點選該列可在上方鎖定地圖與放大照片"),
@@ -662,5 +663,4 @@ if unmatched_targets:
         f"🔴 確定未在空中 / 未起飛之目標清單 ({len(unmatched_targets)} 架)"
     )
 
-    df_unmatched = pd.DataFrame({
-      
+    df_unmatc
