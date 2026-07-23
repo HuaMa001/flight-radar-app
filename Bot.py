@@ -31,6 +31,13 @@ def check_is_taiwan(text_or_code: str) -> bool:
 
 
 def send_discord_webhook(taiwan_flights: list):
+    # 除錯訊息
+    print(f"🔍 DEBUG: 當前讀取到的 Webhook 網址長度為: {len(DISCORD_WEBHOOK_URL)}")
+    
+    if not DISCORD_WEBHOOK_URL:
+        print("⚠️ 未偵測到 DISCORD 金鑰設定，請檢查 GitHub Secrets！")
+        return
+
     """專用 Discord Embed 卡片發送函式"""
     if not DISCORD_WEBHOOK_URL:
         print("⚠️ 未偵測到 DISCORD 金鑰設定，請檢查 GitHub Secrets！")
@@ -141,6 +148,4 @@ if __name__ == "__main__":
 
 
 
-if __name__ == "__main__":
-    main()
     
