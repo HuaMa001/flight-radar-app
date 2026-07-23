@@ -25,8 +25,8 @@ jobs:
 
       - name: 執行監控並推播
         env:
-          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD }}
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          DISCORD: ${{ secrets.DISCORD }}               # 👈 關鍵修正：準確對應你的 Secret 名稱
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD }} # 👈 雙重保險
         run: python Bot.py
+
 
