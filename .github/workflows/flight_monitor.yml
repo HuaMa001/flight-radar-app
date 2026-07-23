@@ -25,5 +25,5 @@ jobs:
 
       - name: 執行監控並推播
         env:
-          DISCORD: ${{ secrets.DISCORD }} 
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD }}
         run: python Bot.py
