@@ -23,14 +23,7 @@ if raw_targets.strip():
 else:
     # 若變數未設定，啟用備用清單
     print("ℹ️ 未偵測到 TARGET_PLANES 變數，啟用內建預設清單。")
-    TARGETS = [
-        "9M-LRU", "B-KQU", "B-LRJ", "B-LJE", "HL7628", "B-18918", "B-18311", "B-18007", "B-5390",
-        "JA872A", "B-17812", "B-16715", "JA880A", "JA731A", "JA875A", "JA614A", "9V-SWI",
-        "9V-SWJ", "B-2032", "B-6091", "B-6093", "HL7732", "HL8071", "HS-TKQ", "HL7783",
-        "VN-A897", "VN-A327", "B-6538", "PK-GMH", "PH-BVD", "9V-OJJ", "JA73AB", "JA894A",
-        "B-18101", "A6-EXR", "A6-EES", "A6-EET", "A6-EEP", "A6-DDE", "A6-BLV", "A6-BMH",
-        "LX-NCL", "LX-VCF", "HL7423", "HL7419", "JA12KZ", "N771CK", "N454PA", "N249BA"
-    ]
+    
 
 fr_api = FlightRadar24API()
 
