@@ -66,7 +66,7 @@ def check_is_taiwan(text_or_code: str) -> bool:
         "RCFG",
         "RCBS",
         "RCFN",
-        "RCKW",,
+        "RCKW",
         "RCMT",
         "RCLY",
     }
