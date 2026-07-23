@@ -339,7 +339,7 @@ with st.sidebar:
     # 按鈕 2: 僅補查未查到的目標
     unmatched_count = len(currently_unmatched)
     rescan_unmatched = st.button(
-        f"⚡ 補查「未查到」目標 ({unmatched_count} 架)",
+        f" 補查「未查到」目標 ({unmatched_count} 架)",
         type="secondary",
         use_container_width=True,
         disabled=(unmatched_count == 0),
