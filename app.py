@@ -329,11 +329,18 @@ with st.sidebar:
 
     st.divider()
 
-    # 補查按鈕
+    # 按鈕 1: 輸入新航班時，重新進行全量搜尋
+    full_search_button = st.button(
+        "🔍 依輸入清單重新搜尋",
+        type="primary",
+        use_container_width=True,
+    )
+
+    # 按鈕 2: 僅補查未查到的目標
     unmatched_count = len(currently_unmatched)
     rescan_unmatched = st.button(
-        f"⚡ 僅重新掃描「未查到」目標 ({unmatched_count} 架)",
-        type="primary",
+        f"⚡ 僅補查「未查到」目標 ({unmatched_count} 架)",
+        type="secondary",
         use_container_width=True,
         disabled=(unmatched_count == 0),
     )
@@ -373,19 +380,28 @@ def run_scan_process(scan_targets: list[str], is_full_rescan: bool = False):
     status_info.empty()
 
 
-# 觸發邏輯：首次開啟執行一次全量掃描，之後按鈕觸發補查
+# 觸發邏輯處理
 if "has_run_once" not in st.session_state:
+    # 首次開啟頁面：自動執行初次全量搜尋
     st.session_state["has_run_once"] = True
     run_scan_process(targets, is_full_rescan=True)
-    st.rerun()  # 強制重新渲染，確保 1 次點擊即同步 UI
+    st.rerun()
 
-if rescan_unmatched and currently_unmatched:
-    # 掃描前清除舊的表格選擇，避免索引錯位
+elif full_search_button:
+    # 點擊「🔍 依輸入清單重新搜尋」：清空舊選擇與資料，搜尋全新輸入框清單
+    if "flight_table" in st.session_state:
+        del st.session_state["flight_table"]
+
+    run_scan_process(targets, is_full_rescan=True)
+    st.rerun()
+
+elif rescan_unmatched and currently_unmatched:
+    # 點擊「⚡ 僅補查未查到目標」：保留舊成果，僅補查漏抓飛機
     if "flight_table" in st.session_state:
         del st.session_state["flight_table"]
 
     run_scan_process(currently_unmatched, is_full_rescan=False)
-    st.rerun()  # ✨ 關鍵改動：掃描結束立刻 rerun，達成單點即時更新！
+    st.rerun()
 
 
 # --- 4. 數據彙整與畫面顯示區塊 ---
