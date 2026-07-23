@@ -1,4 +1,5 @@
 from concurrent.futures import ThreadPoolExecutor, as_completed
+import time
 import pandas as pd
 import pydeck as pdk
 import requests
@@ -295,6 +296,7 @@ with st.sidebar:
     N454PA
     N249BA"""
 
+    # 自動清理縮排與空白
     clean_default_flights = "\n".join(
         [
             line.strip()
@@ -361,7 +363,7 @@ with st.spinner("正從 FlightRadar24 抓取全球即時空域數據並進行多
         st.divider()
 
         if not df.empty:
-            # 3. 升級版 PyDeck 互動地圖
+            # 3. 升級版 PyDeck 互動地圖 (已移除高度與地速)
             st.subheader(
                 "🗺️ 飛機即時位置雷達地圖 (將滑鼠移至點上可查看詳情)"
             )
@@ -370,8 +372,8 @@ with st.spinner("正從 FlightRadar24 抓取全球即時空域數據並進行多
                 "ScatterplotLayer",
                 data=df,
                 get_position=["lon", "lat"],
-                get_color="[230, 57, 70, 210]",
-                get_radius=70000,
+                get_color="[230, 57, 70, 210]",  # 鮮艷紅點
+                get_radius=70000,  # 點大小
                 pickable=True,
                 auto_highlight=True,
             )
@@ -386,6 +388,7 @@ with st.spinner("正從 FlightRadar24 抓取全球即時空域數據並進行多
                 pitch=0,
             )
 
+            # 懸浮提示框 HTML (已移除高度與地速)
             hover_tooltip = {
                 "html": """
                 <div style="font-family: Arial, sans-serif; padding: 6px 10px; line-height: 1.5;">
@@ -415,7 +418,7 @@ with st.spinner("正從 FlightRadar24 抓取全球即時空域數據並進行多
                 )
             )
 
-            # 4. 詳細清單表格
+            # 4. 詳細清單表格 (已移除 lat, lon, _is_taiwan 等內部與高度速度資料)
             st.subheader("📋 空中即時動態詳細清單")
             display_df = df.drop(columns=["lat", "lon", "_is_taiwan"])
 
@@ -430,16 +433,7 @@ with st.spinner("正從 FlightRadar24 抓取全球即時空域數據並進行多
     except Exception as e:
         st.error(f"執行監測時發生錯誤: {str(e)}")
 
-# --- 使用 HTML/JS 進行無阻塞自動定時刷新 ---
+# --- 自動更新機制實作 ---
 if auto_refresh:
-    st.components.v1.html(
-        f"""
-        <script>
-            setTimeout(function(){{
-                window.parent.postMessage({{type: 'streamlit:render'}}, '*');
-                window.parent.location.reload();
-            }}, {refresh_interval * 1000});
-        </script>
-        """,
-        height=0,
-    )
+    time.sleep(refresh_interval)
+    st.rerun()
