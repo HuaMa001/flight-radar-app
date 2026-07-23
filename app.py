@@ -137,16 +137,16 @@ def fetch_direct_clickhandler(flight_obj_or_id) -> dict | None:
 
 
 @st.cache_data(ttl=60, show_spinner=False)
-def search_single_target_cached(target_raw: str, all_flights) -> dict | None:
+def search_single_target_cached(target_raw: str, _all_flights):
     # 取得最新的廣播池
     target_clean = target_raw.replace("-", "")
 
     flight_map_by_id = {
-        getattr(f, "id", ""): f for f in all_flights if getattr(f, "id", "")
+        getattr(f, "id", ""): f for f in _all_flights if getattr(f, "id", "")
     }
 
     # 步驟 1: 高度優化的廣播池比對 (90% 以上目標在這裡就能命中，不消耗 API 限額)
-    for flight in all_flights:
+    for flight in _all_flights:
         f_num = (getattr(flight, "number", "") or "").upper()
         f_callsign = (getattr(flight, "callsign", "") or "").upper()
         f_reg = (getattr(flight, "registration", "") or "").upper()
