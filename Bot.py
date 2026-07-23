@@ -1,5 +1,6 @@
 import os
 import time
+from datetime import datetime, timedelta, timezone
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import requests
 from FlightRadarAPI import FlightRadar24API
@@ -41,6 +42,18 @@ http_session.headers.update({
     "Sec-Fetch-Mode": "cors",
     "Sec-Fetch-Site": "same-origin",
 })
+
+
+def format_full_datetime(ts: int | None) -> str:
+    """將 Unix Timestamp 轉為 UTC+8 時區的完整日期與時間 (YYYY-MM-DD HH:MM)"""
+    if not ts:
+        return "未知"
+    try:
+        tz_tw = timezone(timedelta(hours=8))
+        dt = datetime.fromtimestamp(ts, tz=tz_tw)
+        return dt.strftime("%Y-%m-%d %H:%M")
+    except Exception:
+        return "未知"
 
 
 def check_is_taiwan(text_or_code: str) -> bool:
@@ -85,7 +98,7 @@ def fetch_planespotters_image(registration: str) -> str | None:
 
 
 def fetch_direct_clickhandler(flight_obj_or_id) -> dict | None:
-    """向 API 索取詳細飛行狀態與起降機場資訊，並自動擷取飛機圖片"""
+    """向 API 索取詳細飛行狀態、起降機場資訊、抵達時間與飛機圖片"""
     try:
         if hasattr(flight_obj_or_id, "id"):
             details = fr_api.get_flight_details(flight_obj_or_id)
@@ -128,16 +141,22 @@ def fetch_direct_clickhandler(flight_obj_or_id) -> dict | None:
         ac = details.get("aircraft") or {}
         f_reg = ac.get("registration") or "未知"
 
+        # --- ⏰ 抓取抵達時間邏輯 ---
+        time_data = details.get("time") or {}
+        sta_ts = (time_data.get("scheduled") or {}).get("arrival")
+        eta_ts = (time_data.get("estimated") or {}).get("arrival")
+        ata_ts = (time_data.get("real") or {}).get("arrival")
+
+        eta_full = format_full_datetime(eta_ts or ata_ts or sta_ts)
+
         # --- 🖼️ 抓取飛機照片邏輯 ---
         image_url = None
         images = ac.get("images") or {}
         large_images = images.get("large") or images.get("medium") or []
         
-        # 1. 優先嘗試從 FR24 內建的 JetPhotos 獲取大圖
         if large_images and isinstance(large_images, list) and len(large_images) > 0:
             image_url = large_images[0].get("src")
 
-        # 2. 若 FR24 沒有照片，向 Planespotters.net 免費 API 反查
         if not image_url and f_reg != "未知":
             image_url = fetch_planespotters_image(f_reg)
 
@@ -146,7 +165,8 @@ def fetch_direct_clickhandler(flight_obj_or_id) -> dict | None:
             "destination": destination,
             "f_num": f_num,
             "f_reg": f_reg,
-            "image_url": image_url,  # 回傳圖片網址
+            "eta_time": eta_full,
+            "image_url": image_url,
         }
     except Exception:
         return None
@@ -185,6 +205,7 @@ def search_single_target(target_raw: str, all_flights: list, flight_map_by_id: d
                         else (f_reg or target_raw)
                     ),
                     "route": f"{details['origin']} ➔ {dest}",
+                    "eta_time": details.get("eta_time", "未知"),
                     "is_taiwan": is_tw,
                     "image_url": details.get("image_url"),
                 }
@@ -224,6 +245,7 @@ def search_single_target(target_raw: str, all_flights: list, flight_map_by_id: d
                                     else target_raw
                                 ),
                                 "route": f"{details['origin']} ➔ {dest}",
+                                "eta_time": details.get("eta_time", "未知"),
                                 "is_taiwan": is_tw,
                                 "image_url": details.get("image_url"),
                             }
@@ -234,14 +256,13 @@ def search_single_target(target_raw: str, all_flights: list, flight_map_by_id: d
 
 
 def send_discord_webhook(taiwan_flights: list):
-    """專用 Discord 美化 Embed 警報推播函式 (支援大圖預覽)"""
+    """專用 Discord 美化 Embed 警報推播函式 (支援預計抵達時間與大圖預覽)"""
     if not DISCORD_WEBHOOK_URL:
         print("⚠️ 未偵測到 DISCORD 金鑰設定，跳過推播發送。")
         return
 
     embeds = []
     
-    # 為每一架符合條件的班機建立獨立的 Embed 卡片，這樣每架飛機都能顯示各自的照片
     for f in taiwan_flights:
         embed = {
             "title": f"🚨 彩繪機降落警報：{f['f_num']}",
@@ -249,11 +270,11 @@ def send_discord_webhook(taiwan_flights: list):
             "fields": [
                 {"name": "機身註冊號", "value": f"`{f['f_reg']}`", "inline": True},
                 {"name": "航線狀況", "value": f"📍 **{f['route']}**", "inline": True},
+                {"name": "預計抵達 (UTC+8)", "value": f"🕒 `{f['eta_time']}`", "inline": False},
             ],
             "footer": {"text": "FlightRadar24 智慧航班監測系統"},
         }
 
-        # 如果有找到圖片，嵌入到 Embed 中
         if f.get("image_url"):
             embed["image"] = {"url": f["image_url"]}
 
