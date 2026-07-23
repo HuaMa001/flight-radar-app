@@ -1,4 +1,5 @@
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime, timedelta, timezone
 import time
 import pandas as pd
 import pydeck as pdk
@@ -51,6 +52,18 @@ http_session = get_http_session()
 
 
 # --- 2. 輔助函式定義 ---
+def format_full_datetime(ts: int | None) -> str:
+    """將 Unix Timestamp 轉為台灣時間的完整日期與時間 (YYYY-MM-DD HH:MM)"""
+    if not ts:
+        return "未知"
+    try:
+        tz_tw = timezone(timedelta(hours=8))
+        dt = datetime.fromtimestamp(ts, tz=tz_tw)
+        return dt.strftime("%Y-%m-%d %H:%M")
+    except Exception:
+        return "未知"
+
+
 def check_is_taiwan(text_or_code: str) -> bool:
     """精準判斷機場代碼或名稱是否屬於台灣 (已修復 URC 烏魯木齊誤報 Bug)"""
     if not text_or_code or text_or_code == "未知":
@@ -98,7 +111,7 @@ def fetch_planespotters_image(registration: str) -> str | None:
 
 
 def fetch_direct_clickhandler(flight_obj_or_id) -> dict | None:
-    """向 API 索取詳細飛行狀態與起降機場資訊，並自動擷取飛機圖片"""
+    """向 API 索取詳細飛行狀態、起降機場資訊、抵達時間與飛機圖片"""
     try:
         if hasattr(flight_obj_or_id, "id"):
             details = fr_api.get_flight_details(flight_obj_or_id)
@@ -160,7 +173,15 @@ def fetch_direct_clickhandler(flight_obj_or_id) -> dict | None:
         f_reg = ac.get("registration") or "未知"
         ac_code = (ac.get("model") or {}).get("code") or "未知"
 
-        # 照片抓取邏輯
+        # ⏰ 抓取抵達時間邏輯
+        time_data = details.get("time") or {}
+        sta_ts = (time_data.get("scheduled") or {}).get("arrival")
+        eta_ts = (time_data.get("estimated") or {}).get("arrival")
+        ata_ts = (time_data.get("real") or {}).get("arrival")
+
+        eta_full = format_full_datetime(eta_ts or ata_ts or sta_ts)
+
+        # 🖼️ 照片抓取邏輯
         image_url = None
         images = ac.get("images") or {}
         large_images = images.get("large") or images.get("medium") or []
@@ -181,6 +202,7 @@ def fetch_direct_clickhandler(flight_obj_or_id) -> dict | None:
             "f_num": f_num,
             "f_reg": f_reg,
             "ac_code": ac_code,
+            "eta_time": eta_full,
             "image_url": image_url,
         }
     except Exception:
@@ -233,6 +255,7 @@ def search_single_target_worker(target_raw: str, all_flights: list) -> dict | No
                     ),
                     "機型": details["ac_code"],
                     "航線 (出發➔到達)": f"{origin} ➔ {destination}",
+                    "預計抵達 (TW)": details["eta_time"],
                     "高度 (ft)": details["alt"],
                     "地速 (kts)": details["spd"],
                     "降落台灣": "🇹🇼 降落台灣" if is_taiwan else "否",
@@ -282,6 +305,7 @@ def search_single_target_worker(target_raw: str, all_flights: list) -> dict | No
                                 ),
                                 "機型": details["ac_code"],
                                 "航線 (出發➔到達)": f"{origin} ➔ {destination}",
+                                "預計抵達 (TW)": details["eta_time"],
                                 "高度 (ft)": details["alt"],
                                 "地速 (kts)": details["spd"],
                                 "降落台灣": "🇹🇼 降落台灣" if is_taiwan else "否",
@@ -302,7 +326,6 @@ st.title("✈️ FlightRadar24 彩繪機降落台灣監測")
 if "matched_dict" not in st.session_state:
     st.session_state["matched_dict"] = {}
 
-# 預設目標清單：改用平舖 list，避免多行縮排解析異常
 DEFAULT_TARGETS = [
     "B-KQU", "B-LRJ", "B-LJE", "HL7628", "B-18918", "B-18311", "B-18007",
     "B-5390", "JA872A", "B-17812", "B-16715", "JA880A", "JA731A", "JA875A",
@@ -310,7 +333,7 @@ DEFAULT_TARGETS = [
     "HL8071", "HS-TKQ", "HL7783", "VN-A897", "VN-A327", "B-6538", "PK-GMH",
     "PH-BVD", "9V-OJJ", "JA73AB", "JA894A", "B-18101", "A6-EXR", "A6-EES",
     "A6-EET", "A6-EEP", "A6-DDE", "A6-BLV", "A6-BMH", "LX-NCL", "LX-VCF",
-    "HL7423", "HL7419", "JA12KZ", "N771CK", "N454PA", "N249BA"
+    "HL7423", "HL7419", "JA12KZ", "N771CK", "N454PA", "N249BA",
 ]
 
 default_text_value = "\n".join(DEFAULT_TARGETS)
@@ -518,6 +541,7 @@ if not df_matched.empty:
                 f"- **機身註冊號**：`{selected_row['機身註冊號']}`\n"
                 f"- **機型**：`{selected_row['機型']}`\n"
                 f"- **航線**：**{selected_row['航線 (出發➔到達)']}**\n"
+                f"- **預計抵達時間 (TW)**：`{selected_row['預計抵達 (TW)']}`\n"
                 f"- **即時高度/速度**：`{selected_row['高度 (ft)']} ft` / `{selected_row['地速 (kts)']} kts`\n"
                 f"- **降落台灣狀態**：{selected_row['降落台灣']}"
             )
@@ -546,6 +570,7 @@ if not df_matched.empty:
             '<span style="font-size: 14px; font-weight: bold; color: #ff4b4b;">✈️ {航班號}</span> '
             '<span style="font-size: 12px; color: #aaa;">({機身註冊號})</span><br/>'
             '<b>📍 航線:</b> {航線 (出發➔到達)}<br/>'
+            '<b>🕒 預計抵達:</b> {預計抵達 (TW)}<br/>'
             '<b>🛩️ 機型:</b> {機型}<br/>'
             '<b>📏 高度:</b> {高度 (ft)} ft | <b>⚡ 地速:</b> {地速 (kts)} kts<br/>'
             '<b>🇹🇼 降落台灣:</b> {降落台灣}<br/>'
@@ -579,6 +604,7 @@ if not df_matched.empty:
         "監控目標",
         "航班號",
         "機身註冊號",
+        "預計抵達 (TW)",
         "機型",
         "航線 (出發➔到達)",
         "資料來源",
@@ -589,57 +615,4 @@ if not df_matched.empty:
     matched_col_config = {
         "編號": st.column_config.NumberColumn("編號", width=50, format="%d"),
         "機身照片": st.column_config.ImageColumn("機身照片", width=90, help="點選該列可在上方鎖定地圖與放大照片"),
-        "降落台灣": st.column_config.TextColumn("降落台灣", width=120),
-        "監控目標": st.column_config.TextColumn("監控目標", width=110),
-        "航班號": st.column_config.TextColumn("航班號", width=110),
-        "機身註冊號": st.column_config.TextColumn("機身註冊號", width=120),
-        "機型": st.column_config.TextColumn("機型", width=90),
-        "航線 (出發➔到達)": st.column_config.TextColumn("航線 (出發➔到達)", width=220),
-        "資料來源": st.column_config.TextColumn("資料來源", width=160),
-    }
-
-    def color_taiwan_col(val):
-        if "🇹🇼" in str(val):
-            return "background-color: #28a745; color: #ffffff; font-weight: bold;"
-        return "color: #888888;"
-
-    styled_display_df = display_df.style.map(
-        color_taiwan_col, subset=["降落台灣"]
-    )
-
-    st.dataframe(
-        styled_display_df,
-        use_container_width=True,
-        hide_index=True,
-        column_config=matched_col_config,
-        key="flight_table",
-        on_select="rerun",
-        selection_mode="single-row",
-    )
-
-st.divider()
-
-# --- 2. 確定未在空中的飛機清單（常駐顯示） ---
-st.subheader(f"🔴 確定未在空中 / 未起飛之目標清單 ({len(unmatched_targets)} 架)")
-
-if unmatched_targets:
-    df_unmatched = pd.DataFrame({
-        "編號": list(range(1, len(unmatched_targets) + 1)),
-        "目標編號": unmatched_targets,
-        "當前狀態": ["未在空中飛行 / 尚未起飛 / 應答機未開啟"] * len(unmatched_targets),
-    })
-
-    unmatched_col_config = {
-        "編號": st.column_config.NumberColumn("編號", width=60, format="%d"),
-        "目標編號": st.column_config.TextColumn("目標編號", width=120),
-        "當前狀態": st.column_config.TextColumn("當前狀態", width=1000),
-    }
-
-    st.dataframe(
-        df_unmatched,
-        use_container_width=True,
-        hide_index=True,
-        column_config=unmatched_col_config,
-    )
-else:
-    st.success("🎉 目前監控清單中的所有目標班機皆已成功在空中定位！")
+        "降落台灣": st.column_config.TextColumn("降落台灣"
