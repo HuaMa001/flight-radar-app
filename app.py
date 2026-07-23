@@ -1,12 +1,9 @@
-from concurrent.futures import ThreadPoolExecutor, as_completed
 import random
 import time
 import pandas as pd
 import pydeck as pdk
 import requests
-from requests.adapters import HTTPAdapter
 import streamlit as st
-from urllib3.util.retry import Retry
 from FlightRadarAPI import FlightRadar24API
 
 # --- 頁面基本設定 ---
@@ -24,26 +21,6 @@ def init_api():
 
 
 fr_api = init_api()
-
-
-# --- 建立帶有自動重試機制的 Requests Session ---
-@st.cache_resource
-def get_http_session():
-    session = requests.Session()
-    # 當遇到 429 (Too Many Requests) 或 5xx 伺服器錯誤時自動重試 3 次
-    retries = Retry(
-        total=3,
-        backoff_factor=0.5,
-        status_forcelist=[429, 500, 502, 503, 504],
-        raise_on_status=False,
-    )
-    adapter = HTTPAdapter(max_retries=retries, pool_connections=10, pool_maxsize=10)
-    session.mount("https://", adapter)
-    session.mount("http://", adapter)
-    return session
-
-
-http_session = get_http_session()
 
 
 # --- 1. 智慧判讀降落台灣 ---
@@ -70,9 +47,9 @@ def check_is_taiwan(text_or_code: str) -> bool:
     return any(kw in s for kw in tw_keywords)
 
 
-# --- 2. 直接請求 FR24 底層 Clickhandler 獲取完整數據包 ---
+# --- 2. 補充詳細資訊 (可選，僅對已成功的飛機打 API) ---
 def fetch_direct_clickhandler(flight_id: str) -> dict | None:
-    """直接對 FR24 API 抓取最完整的詳細資訊 (含已降落班機動態)"""
+    """僅對比對成功的目標抓取完整詳細資訊"""
     if not flight_id:
         return None
 
@@ -83,10 +60,8 @@ def fetch_direct_clickhandler(flight_id: str) -> dict | None:
             " (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
         )
     }
-
     try:
-        # 使用全域連線池 + 自訂 Session 請求
-        res = http_session.get(url, headers=headers, timeout=5)
+        res = requests.get(url, headers=headers, timeout=3)
         if res.status_code == 200:
             data = res.json()
             if isinstance(data, dict) and "airport" in data:
@@ -113,33 +88,6 @@ def fetch_direct_clickhandler(flight_id: str) -> dict | None:
                     or "未知"
                 )
 
-                pos = data.get("position") or {}
-                trail = data.get("trail") or []
-                latest_trail = trail[0] if trail else {}
-
-                alt = (
-                    pos.get("altitude", {}).get("feet")
-                    if isinstance(pos.get("altitude"), dict)
-                    else (latest_trail.get("alt") or 0)
-                )
-                spd = (
-                    pos.get("speed", {}).get("kts")
-                    if isinstance(pos.get("speed"), dict)
-                    else (latest_trail.get("spd") or 0)
-                )
-                lat = (
-                    pos.get("latitude")
-                    or latest_trail.get("lat")
-                    or pos.get("lat")
-                    or 0.0
-                )
-                lon = (
-                    pos.get("longitude")
-                    or latest_trail.get("lng")
-                    or pos.get("lon")
-                    or 0.0
-                )
-
                 ident = data.get("identification") or {}
                 f_num = (
                     (ident.get("number") or {}).get("default")
@@ -154,10 +102,6 @@ def fetch_direct_clickhandler(flight_id: str) -> dict | None:
                 return {
                     "origin": origin,
                     "destination": destination,
-                    "alt": alt if alt is not None else 0,
-                    "spd": spd if spd is not None else 0,
-                    "lat": lat,
-                    "lon": lon,
                     "f_num": f_num,
                     "f_reg": f_reg,
                     "ac_code": ac_code,
@@ -167,124 +111,16 @@ def fetch_direct_clickhandler(flight_id: str) -> dict | None:
     return None
 
 
-# --- 3. 核心邏輯：單一目標智慧反查 ---
-def search_single_target(target: str, all_flights: list) -> dict | None:
-    """單一目標智慧反查邏輯"""
-    target = target.strip().upper()
-    if not target:
-        return None
-
-    # 加入小額隨機延遲 (0.05~0.2秒)，錯開多線程發送時間點
-    time.sleep(random.uniform(0.05, 0.2))
-
-    # 步驟 1: 全域廣播池比對
-    for flight in all_flights:
-        f_num = (getattr(flight, "number", "") or "").upper()
-        f_callsign = (getattr(flight, "callsign", "") or "").upper()
-        f_reg = (getattr(flight, "registration", "") or "").upper()
-
-        if target in [f_num, f_callsign, f_reg] and f_reg != "":
-            f_id = getattr(flight, "id", "")
-            details = fetch_direct_clickhandler(f_id)
-
-            if details:
-                origin = details["origin"]
-                destination = details["destination"]
-                is_taiwan = check_is_taiwan(destination)
-
-                return {
-                    "監控目標": target,
-                    "航班號": (
-                        details["f_num"]
-                        if details["f_num"] != "未知"
-                        else (f_num or f_callsign)
-                    ),
-                    "機身註冊號": f_reg,
-                    "機型": (
-                        details["ac_code"]
-                        if details["ac_code"] != "未知"
-                        else getattr(flight, "aircraft_code", "未知")
-                    ),
-                    "航線 (出發➔到達)": f"{origin} ➔ {destination}",
-                    "高度 (ft)": details["alt"],
-                    "地速 (kts)": details["spd"],
-                    "降落台灣": "🇹🇼 降落台灣" if is_taiwan else "否",
-                    "資料來源": "📡 直播廣播",
-                    "lat": details["lat"],
-                    "lon": details["lon"],
-                    "_is_taiwan": is_taiwan,
-                }
-
-    # 步驟 2: Web Search API + 底層 Clickhandler 反查
-    search_url = f"https://www.flightradar24.com/v1/search/web/find?query={target}"
-    headers = {
-        "User-Agent": (
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-            " (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-        )
-    }
-
-    try:
-        res = http_session.get(search_url, headers=headers, timeout=5)
-        if res.status_code == 200:
-            results = res.json().get("results", [])
-
-            for item in results:
-                if item.get("type") == "live":
-                    live_id = str(item.get("id", "")).strip()
-
-                    if live_id:
-                        details = fetch_direct_clickhandler(live_id)
-                        if details:
-                            origin = details["origin"]
-                            destination = details["destination"]
-                            is_taiwan = check_is_taiwan(destination)
-
-                            return {
-                                "監控目標": target,
-                                "航班號": (
-                                    details["f_num"]
-                                    if details["f_num"] != "未知"
-                                    else target
-                                ),
-                                "機身註冊號": (
-                                    details["f_reg"]
-                                    if details["f_reg"] != "未知"
-                                    else target
-                                ),
-                                "機型": details["ac_code"],
-                                "航線 (出發➔到達)": (
-                                    f"{origin} ➔ {destination}"
-                                ),
-                                "高度 (ft)": details["alt"],
-                                "地速 (kts)": details["spd"],
-                                "降落台灣": (
-                                    "🇹🇼 降落台灣" if is_taiwan else "否"
-                                ),
-                                "資料來源": "🔍 Web API 詳細反查",
-                                "lat": details["lat"],
-                                "lon": details["lon"],
-                                "_is_taiwan": is_taiwan,
-                            }
-    except Exception:
-        pass
-
-    return None
-
-
 # --- APP 介面與標題 ---
 st.title("✈️ FlightRadar24 智慧航班與降落台灣監測 APP")
 st.caption(
-    "🟢 完全免費 / 免 API Key | 支援機身編號雙重反查、互動地圖與多線程爆速查詢"
+    "🟢 完全免費 / 免 API Key | 單次廣播高穩定度模式"
 )
 
 # --- 側邊欄設定 ---
 with st.sidebar:
     st.header("⚙️ 監控清單")
-    st.info(
-        "💡 支援輸入「航班號」(如 BR197) 或「機身編號/註冊號」(如 A6-EXR,"
-        " N130FE)"
-    )
+    st.info("💡 支援輸入「航班號」(如 BR197) 或「機身編號/註冊號」(如 A6-EXR)")
 
     raw_default_flights = """B-KQU
     B-LRJ
@@ -344,8 +180,11 @@ with st.sidebar:
     )
 
     flight_input = st.text_area(
-        "飛機代碼清單 (每行一班)", value=clean_default_flights, height=300
+        "飛機代碼清單 (每行一班)", value=clean_default_flights, height=280
     )
+
+    # 深度查詢開關：開啟時才會對找到的飛機補充 Clickhandler 資訊
+    deep_fetch = st.checkbox("🔍 啟用深層航線補全 (對發現的目標補充詳細機場資訊)", value=True)
 
     st.divider()
     scan_button = st.button(
@@ -354,42 +193,69 @@ with st.sidebar:
 
 targets = [f.strip().upper() for f in flight_input.split("\n") if f.strip()]
 
-# --- 資料處理與 Session 狀態維護 ---
-# 只有在初次載入或點擊「掃描」按鈕時才打 API
+# --- 主程式執行區塊 (單次廣播邏輯) ---
 if scan_button or "scan_df" not in st.session_state:
-    with st.spinner(
-        "正從 FlightRadar24 抓取全球即時空域數據並進行多線程比對..."
-    ):
+    with st.spinner("正發送『單次廣播』抓取全球即時空域，並於記憶體中快速比對..."):
         try:
+            # 【核心重點 1】：僅打 1 次 API，將全球所有在空中的飛機抓回記憶體
             all_active_flights = fr_api.get_flights()
+
+            # 【核心重點 2】：建立快速索引清單
+            targets_set = set(targets)
             matched_results = []
 
-            def worker(t):
-                return search_single_target(t, all_active_flights)
+            # 遍歷一次全域資料，比對記憶體中的飛機 (速度約 0.01 秒)
+            for flight in all_active_flights:
+                f_num = (getattr(flight, "number", "") or "").upper()
+                f_callsign = (getattr(flight, "callsign", "") or "").upper()
+                f_reg = (getattr(flight, "registration", "") or "").upper()
 
-            progress_bar = st.progress(0)
-            completed_count = 0
+                # 比對是否在目標清單中
+                hit_target = None
+                for t in [f_reg, f_num, f_callsign]:
+                    if t and t in targets_set:
+                        hit_target = t
+                        break
 
-            # 關鍵修改：將 max_workers 由 10 降至 4，降低被 FR24 擋掉的機率
-            with ThreadPoolExecutor(max_workers=4) as executor:
-                futures = [executor.submit(worker, t) for t in targets]
-                for future in as_completed(futures):
-                    res = future.result()
-                    if res:
-                        matched_results.append(res)
-                    completed_count += 1
-                    progress_bar.progress(completed_count / len(targets))
+                if hit_target:
+                    f_id = getattr(flight, "id", "")
+                    origin = getattr(flight, "origin_airport_iata", "未知") or "未知"
+                    destination = getattr(flight, "destination_airport_iata", "未知") or "未知"
+                    ac_code = getattr(flight, "aircraft_code", "未知") or "未知"
 
-            progress_bar.empty()
+                    # 深度補充邏輯 (若開啟，只對這幾架 hit 的飛機發送請求)
+                    if deep_fetch and f_id:
+                        details = fetch_direct_clickhandler(f_id)
+                        if details:
+                            origin = details["origin"] if details["origin"] != "未知" else origin
+                            destination = details["destination"] if details["destination"] != "未知" else destination
+                            ac_code = details["ac_code"] if details["ac_code"] != "未知" else ac_code
+                            f_num = details["f_num"] if details["f_num"] != "未知" else f_num
+                            f_reg = details["f_reg"] if details["f_reg"] != "未知" else f_reg
 
-            # 將結果存入 session_state
+                    is_taiwan = check_is_taiwan(destination)
+
+                    matched_results.append({
+                        "監控目標": hit_target,
+                        "航班號": f_num if f_num else "未知",
+                        "機身註冊號": f_reg if f_reg else "未知",
+                        "機型": ac_code,
+                        "航線 (出發➔到達)": f"{origin} ➔ {destination}",
+                        "高度 (ft)": getattr(flight, "altitude", 0),
+                        "地速 (kts)": getattr(flight, "ground_speed", 0),
+                        "降落台灣": "🇹🇼 降落台灣" if is_taiwan else "否",
+                        "資料來源": "📡 全域即時廣播",
+                        "lat": getattr(flight, "latitude", 0.0),
+                        "lon": getattr(flight, "longitude", 0.0),
+                        "_is_taiwan": is_taiwan,
+                    })
+
             st.session_state["scan_df"] = pd.DataFrame(matched_results)
 
         except Exception as e:
-            st.error(f"執行監測時發生錯誤: {str(e)}")
+            st.error(f"單次廣播抓取失敗: {str(e)}")
             st.session_state["scan_df"] = pd.DataFrame()
 
-# 讀取 Session 內的資料
 df = st.session_state.get("scan_df", pd.DataFrame())
 
 # --- 頂部數據看板 ---
@@ -405,7 +271,7 @@ st.divider()
 
 # --- 地圖與清單呈現 ---
 if not df.empty:
-    st.subheader("🗺️ 飛機即時位置雷達地圖 (將滑鼠移至點上可查看詳情)")
+    st.subheader("🗺️ 飛機即時位置雷達地圖")
 
     layer = pdk.Layer(
         "ScatterplotLayer",
@@ -458,9 +324,6 @@ if not df.empty:
 
     st.subheader("📋 空中即時動態詳細清單")
     display_df = df.drop(columns=["lat", "lon", "_is_taiwan"], errors="ignore")
-
     st.dataframe(display_df, use_container_width=True, hide_index=True)
 else:
-    st.warning(
-        "⚠️ 目前清單中的飛機皆「不在空中飛行」（可能尚未起飛、已降落過久，或應答機未開啟）。"
-    )
+    st.warning("⚠️ 目前清單中的飛機皆「不在空中飛行」。")
