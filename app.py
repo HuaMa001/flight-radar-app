@@ -349,7 +349,7 @@ def run_scan_process_until_stable(
     all_targets: list[str],
     is_full_rescan: bool = False,
     max_rounds: int = 5,
-    stable_threshold: int = 2,
+    stable_threshold: int = 3,
 ):
     """
     持續反覆查詢未查到的目標，直到「未查到數量」連續 stable_threshold 次沒有變化，或達到 max_rounds 止。
