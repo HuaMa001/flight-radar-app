@@ -135,7 +135,6 @@ def search_single_target(target: str, all_flights: list) -> dict | None:
     if not target:
         return None
 
-    # 1. 廣播池比對
     for flight in all_flights:
         f_num = (getattr(flight, "number", "") or "").upper()
         f_callsign = (getattr(flight, "callsign", "") or "").upper()
@@ -171,7 +170,6 @@ def search_single_target(target: str, all_flights: list) -> dict | None:
                     "_is_taiwan": is_taiwan,
                 }
 
-    # 2. Web API 詳細反查
     search_url = (
         f"https://www.flightradar24.com/v1/search/web/find?query={target}"
     )
@@ -368,15 +366,6 @@ st.progress(min(current_idx / len(targets), 1.0) if len(targets) > 0 else 0)
 
 st.divider()
 
-# 通用的欄位寬度設定
-col_config = {
-    "編號": st.column_config.NumberColumn(
-        "編號",
-        width="small",  # ⚡ 壓縮編號欄位寬度
-        format="%d",
-    )
-}
-
 if current_idx == 0:
     st.info("👈 請點擊側邊欄的「▶️ 查詢下 5 個目標」開始檢索！")
 else:
@@ -439,11 +428,25 @@ else:
         display_df = df_matched.drop(columns=["lat", "lon", "_is_taiwan"]).copy()
         display_df.insert(0, "編號", range(1, len(display_df) + 1))
 
+        # ⚡ 明確指定每個欄位的像素寬度，精準控制欄位比例
+        matched_col_config = {
+            "編號": st.column_config.NumberColumn("編號", width=60, format="%d"),
+            "監控目標": st.column_config.TextColumn("監控目標", width=110),
+            "航班號": st.column_config.TextColumn("航班號", width=100),
+            "機身註冊號": st.column_config.TextColumn("機身註冊號", width=120),
+            "機型": st.column_config.TextColumn("機型", width=90),
+            "航線 (出發➔到達)": st.column_config.TextColumn("航線 (出發➔到達)", width=220),
+            "高度 (ft)": st.column_config.NumberColumn("高度 (ft)", width=100),
+            "地速 (kts)": st.column_config.NumberColumn("地速 (kts)", width=100),
+            "降落台灣": st.column_config.TextColumn("降落台灣", width=120),
+            "資料來源": st.column_config.TextColumn("資料來源", width=160),
+        }
+
         st.dataframe(
             display_df,
             use_container_width=True,
             hide_index=True,
-            column_config=col_config,  # ⚡ 應用小寬度設定
+            column_config=matched_col_config,
         )
 
     # --- 2. 獨立表格顯示：已查詢但未查到的飛機 ---
@@ -456,15 +459,16 @@ else:
             "當前狀態": "未在空中飛行 / 尚未起飛 / 應答機未開啟",
         })
 
+        # ⚡ 針對未查到表格，將「編號」設為 60px，「目標編號」設為 120px，剩餘空間全部讓給「當前狀態」
+        unmatched_col_config = {
+            "編號": st.column_config.NumberColumn("編號", width=60, format="%d"),
+            "目標編號": st.column_config.TextColumn("目標編號", width=120),
+            "當前狀態": st.column_config.TextColumn("當前狀態"),  # 不限寬度，會自動填滿右側
+        }
+
         st.dataframe(
             df_unmatched,
             use_container_width=True,
             hide_index=True,
-            column_config={
-                **col_config,
-                "當前狀態": st.column_config.TextColumn(
-                    "當前狀態",
-                    width="large",  # 讓文字較長的的欄位分到較多空間
-                ),
-            },
+            column_config=unmatched_col_config,
         )
