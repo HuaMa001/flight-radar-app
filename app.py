@@ -1,3 +1,4 @@
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import time
 import pandas as pd
 import pydeck as pdk
@@ -21,7 +22,7 @@ def init_api():
 fr_api = init_api()
 
 
-@st.cache_data(ttl=30, show_spinner=False)
+@st.cache_data(ttl=15, show_spinner=False)
 def fetch_all_active_flights():
     try:
         flights = fr_api.get_flights()
@@ -133,15 +134,16 @@ def fetch_direct_clickhandler(flight_obj_or_id) -> dict | None:
         return None
 
 
-@st.cache_data(ttl=30, show_spinner=False)
-def search_single_target_cached(target_raw: str, _all_flights):
+def search_single_target_worker(target_raw: str, all_flights: list) -> dict | None:
+    """支援 worker 的單目標查詢函式"""
     target_clean = target_raw.replace("-", "")
 
     flight_map_by_id = {
-        getattr(f, "id", ""): f for f in _all_flights if getattr(f, "id", "")
+        getattr(f, "id", ""): f for f in all_flights if getattr(f, "id", "")
     }
 
-    for flight in _all_flights:
+    # 1. 廣播數據直接比對
+    for flight in all_flights:
         f_num = (getattr(flight, "number", "") or "").upper()
         f_callsign = (getattr(flight, "callsign", "") or "").upper()
         f_reg = (getattr(flight, "registration", "") or "").upper()
@@ -186,7 +188,7 @@ def search_single_target_cached(target_raw: str, _all_flights):
                     "_is_taiwan": is_taiwan,
                 }
 
-    time.sleep(0.3)
+    # 2. 若廣播數據未抓到，才使用 Web API 反查
     search_url = (
         f"https://www.flightradar24.com/v1/search/web/find?query={target_raw}"
     )
@@ -198,7 +200,7 @@ def search_single_target_cached(target_raw: str, _all_flights):
     }
 
     try:
-        res = requests.get(search_url, headers=headers, timeout=5)
+        res = requests.get(search_url, headers=headers, timeout=4)
         if res.status_code == 200:
             results = sorted(
                 res.json().get("results", []),
@@ -327,72 +329,55 @@ with st.sidebar:
 
     st.divider()
 
-    # 按鈕 1: 重新搜尋新輸入的清單
     full_search_button = st.button(
         "🔍 依輸入清單重新搜尋",
         type="primary",
         use_container_width=True,
     )
 
-    # 按鈕 2: 僅補查未查到的目標
     unmatched_count = len(currently_unmatched)
     rescan_unmatched = st.button(
-        f"⚡ 輪詢補查「未查到」至穩定 ({unmatched_count} 架)",
+        f"⚡ 併行輪詢補查「未查到」 ({unmatched_count} 架)",
         type="secondary",
         use_container_width=True,
         disabled=(unmatched_count == 0),
     )
 
 
-# 🔄 自動持續輪詢至數字穩定的掃描邏輯（調高 max_rounds 至 10，預設連續 4 次穩定）
+# 🔄 多執行緒併行 + 動態刷新數據邏輯
 def run_scan_process_until_stable(
     all_targets: list[str],
     is_full_rescan: bool = False,
     max_rounds: int = 10,
-    stable_threshold: int = 5,
+    stable_threshold: int = 4,
+    max_workers: int = 8,  # 同時開 8 個工作線程進行併行查詢
 ):
-    """
-    持續反覆查詢未查到的目標，直到「未查到數量」連續 4 次沒有變化，或達到 max_rounds 止。
-    """
     if is_full_rescan:
         st.session_state["matched_dict"] = {}
 
     status_info = st.empty()
     progress_bar = st.progress(0)
 
-    status_info.info("📡 正獲取 FlightRadar24 最新全球空域數據...")
-    fetch_all_active_flights.clear()
-    search_single_target_cached.clear()
-    snapshot = fetch_all_active_flights()
-
-    if not snapshot:
-        st.warning("無法取得 FlightRadar24 全球廣播數據")
-        progress_bar.empty()
-        status_info.empty()
-        return
-
     last_unmatched_count = -1
     stable_counter = 0
 
     for current_round in range(1, max_rounds + 1):
-        # 找出當前尚未比對成功的目標
         matched_keys = set(st.session_state["matched_dict"].keys())
         pending_targets = [t for t in all_targets if t not in matched_keys]
         current_unmatched_count = len(pending_targets)
 
-        # 條件 1：如果全部目標都查到了，直接結束
+        # 1. 完全查完提前結束
         if current_unmatched_count == 0:
             status_info.success("🎉 所有監控目標皆已成功定位！")
             break
 
-        # 條件 2：檢查未查到的數量是否與上一輪相同
+        # 2. 判斷穩定度
         if current_unmatched_count == last_unmatched_count:
             stable_counter += 1
         else:
             stable_counter = 1
             last_unmatched_count = current_unmatched_count
 
-        # 連續 4 次數量沒變即判定為穩定
         if stable_counter >= stable_threshold:
             status_info.success(
                 f"✅ 未查到數量已連續 {stable_threshold} 輪維持在 {current_unmatched_count} 架，數據已達穩定狀態！"
@@ -401,20 +386,39 @@ def run_scan_process_until_stable(
             break
 
         status_info.info(
-            f"🔄 第 {current_round}/{max_rounds} 輪掃描中... "
+            f"⚡ [併行加速中] 第 {current_round}/{max_rounds} 輪掃描... "
             f"（剩餘未查到：{current_unmatched_count} 架 | 穩定進度：{stable_counter}/{stable_threshold}）"
         )
 
+        # 每輪重新取得最新的全球空域快照
+        fetch_all_active_flights.clear()
+        snapshot = fetch_all_active_flights()
+
         total_pending = len(pending_targets)
-        for i, target in enumerate(pending_targets):
-            res = search_single_target_cached(target, snapshot)
-            if res:
-                st.session_state["matched_dict"][target] = res
+        completed_count = 0
 
-            progress_bar.progress((i + 1) / total_pending)
+        # 🚀 使用 ThreadPoolExecutor 同時併行查詢所有待查目標
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            future_to_target = {
+                executor.submit(
+                    search_single_target_worker, target, snapshot
+                ): target
+                for target in pending_targets
+            }
 
-        # 輪詢微小間隔，維持 API 請求品質
-        time.sleep(0.5)
+            for future in as_completed(future_to_target):
+                target = future_to_target[future]
+                try:
+                    res = future.result()
+                    if res:
+                        st.session_state["matched_dict"][target] = res
+                except Exception:
+                    pass
+
+                completed_count += 1
+                progress_bar.progress(completed_count / total_pending)
+
+        time.sleep(0.3)
 
     progress_bar.empty()
     status_info.empty()
@@ -477,13 +481,11 @@ if not df_matched.empty:
         .reset_index(drop=True)
     )
 
-    # 預設廣域焦點
     center_lat = df_matched["lat"].mean()
     center_lon = df_matched["lon"].mean()
     zoom_level = 2.2
     selected_flight_number = None
 
-    # 檢查表格是否有選取特定列
     if (
         "flight_table" in st.session_state
         and st.session_state["flight_table"].get("selection", {}).get("rows")
@@ -558,7 +560,6 @@ if not df_matched.empty:
     st.subheader("🟢 在空中/飛行中航班詳細清單")
     st.info("💡 **點擊下方清單中任意一列航班，地圖會自動飛過去並鎖定該飛機！**")
 
-    # 將「降落台灣」欄位移至第 2 欄（編號之後）
     ordered_cols = [
         "降落台灣",
         "監控目標",
