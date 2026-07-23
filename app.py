@@ -53,7 +53,7 @@ http_session = get_http_session()
 
 # --- 2. 輔助函式定義 ---
 def format_full_datetime(ts: int | None) -> str:
-    """將 Unix Timestamp 轉為台灣時間的完整日期與時間 (YYYY-MM-DD HH:MM)"""
+    """將 Unix Timestamp 轉為 UTC+8 時區的完整日期與時間 (YYYY-MM-DD HH:MM)"""
     if not ts:
         return "未知"
     try:
@@ -245,7 +245,7 @@ def search_single_target_worker(target_raw: str, all_flights: list) -> dict | No
                     "機身註冊號": details["f_reg"] if details["f_reg"] != "未知" else (f_reg or target_raw),
                     "機型": details["ac_code"],
                     "航線 (出發➔到達)": f"{origin} ➔ {destination}",
-                    "預計抵達 (TW)": details["eta_time"],
+                    "預計抵達 (UTC+8)": details["eta_time"],
                     "高度 (ft)": details["alt"],
                     "地速 (kts)": details["spd"],
                     "降落台灣": "🇹🇼 降落台灣" if is_taiwan else "否",
@@ -284,7 +284,7 @@ def search_single_target_worker(target_raw: str, all_flights: list) -> dict | No
                                 "機身註冊號": details["f_reg"] if details["f_reg"] != "未知" else target_raw,
                                 "機型": details["ac_code"],
                                 "航線 (出發➔到達)": f"{origin} ➔ {destination}",
-                                "預計抵達 (TW)": details["eta_time"],
+                                "預計抵達 (UTC+8)": details["eta_time"],
                                 "高度 (ft)": details["alt"],
                                 "地速 (kts)": details["spd"],
                                 "降落台灣": "🇹🇼 降落台灣" if is_taiwan else "否",
@@ -505,20 +505,20 @@ if not df_matched.empty:
 
         detail_col1, detail_col2 = st.columns([1, 2])
         with detail_col1:
-            if selected_row["機身照片"]:
+            if selected_row.get("機身照片"):
                 st.image(selected_row["機身照片"], caption=f"機身註冊號：{selected_row['機身註冊號']}", use_container_width=True)
             else:
                 st.warning("📷 尚無此機身之公開照片庫資料")
 
         with detail_col2:
             st.markdown(
-                f"- **航班號**：`{selected_row['航班號']}`\n"
-                f"- **機身註冊號**：`{selected_row['機身註冊號']}`\n"
-                f"- **機型**：`{selected_row['機型']}`\n"
-                f"- **航線**：**{selected_row['航線 (出發➔到達)']}**\n"
-                f"- **預計抵達時間 (TW)**：`{selected_row['預計抵達 (TW)']}`\n"
-                f"- **即時高度/速度**：`{selected_row['高度 (ft)']} ft` / `{selected_row['地速 (kts)']} kts`\n"
-                f"- **降落台灣狀態**：{selected_row['降落台灣']}"
+                f"- **航班號**：`{selected_row.get('航班號', '未知')}`\n"
+                f"- **機身註冊號**：`{selected_row.get('機身註冊號', '未知')}`\n"
+                f"- **機型**：`{selected_row.get('機型', '未知')}`\n"
+                f"- **航線**：**{selected_row.get('航線 (出發➔到達)', '未知')}**\n"
+                f"- **預計抵達時間 (UTC+8)**：`{selected_row.get('預計抵達 (UTC+8)', '未知')}`\n"
+                f"- **即時高度/速度**：`{selected_row.get('高度 (ft)', 0)} ft` / `{selected_row.get('地速 (kts)', 0)} kts`\n"
+                f"- **降落台灣狀態**：{selected_row.get('降落台灣', '否')}"
             )
         st.divider()
 
@@ -543,7 +543,7 @@ if not df_matched.empty:
         "html": (
             "<b>✈️ {航班號}</b> ({機身註冊號})<br/>"
             "<b>📍 航線:</b> {航線 (出發➔到達)}<br/>"
-            "<b>🕒 預計抵達:</b> {預計抵達 (TW)}<br/>"
+            "<b>🕒 預計抵達:</b> {預計抵達 (UTC+8)}<br/>"
             "<b>🛩️ 機型:</b> {機型}<br/>"
             "<b>📏 高度:</b> {高度 (ft)} ft | <b>⚡ 地速:</b> {地速 (kts)} kts<br/>"
             "<b>🇹🇼 降落台灣:</b> {降落台灣}"
@@ -575,11 +575,17 @@ if not df_matched.empty:
         "監控目標",
         "航班號",
         "機身註冊號",
-        "預計抵達 （UTC+8)",
+        "預計抵達 (UTC+8)",
         "機型",
         "航線 (出發➔到達)",
         "資料來源",
     ]
+
+    # 防禦機制：確保舊 Session 數據也能補齊欄位
+    for col in ordered_cols:
+        if col not in df_sorted.columns:
+            df_sorted[col] = "未知"
+
     display_df = df_sorted[ordered_cols].copy()
     display_df.insert(0, "編號", range(1, len(display_df) + 1))
 
@@ -590,7 +596,7 @@ if not df_matched.empty:
         "監控目標": st.column_config.TextColumn("監控目標", width=100),
         "航班號": st.column_config.TextColumn("航班號", width=100),
         "機身註冊號": st.column_config.TextColumn("機身註冊號", width=110),
-        "預計抵達 (UTC+8)": st.column_config.TextColumn("預計抵達 (UTC+8)", width=150),
+        "預計抵達 (UTC+8)": st.column_config.TextColumn("預計抵達 (UTC+8)", width=160),
         "機型": st.column_config.TextColumn("機型", width=90),
         "航線 (出發➔到達)": st.column_config.TextColumn("航線 (出發➔到達)", width=220),
         "資料來源": st.column_config.TextColumn("資料來源", width=150),
@@ -618,4 +624,26 @@ if not df_matched.empty:
 st.divider()
 
 # --- 2. 確定未在空中的飛機清單（常駐顯示） ---
-st
+st.subheader(f"🔴 確定未在空中 / 未起飛之目標清單 ({len(unmatched_targets)} 架)")
+
+if unmatched_targets:
+    df_unmatched = pd.DataFrame({
+        "編號": list(range(1, len(unmatched_targets) + 1)),
+        "目標編號": unmatched_targets,
+        "當前狀態": ["未在空中飛行 / 尚未起飛 / 應答機未開啟"] * len(unmatched_targets),
+    })
+
+    unmatched_col_config = {
+        "編號": st.column_config.NumberColumn("編號", width=60, format="%d"),
+        "目標編號": st.column_config.TextColumn("目標編號", width=120),
+        "當前狀態": st.column_config.TextColumn("當前狀態", width=1000),
+    }
+
+    st.dataframe(
+        df_unmatched,
+        use_container_width=True,
+        hide_index=True,
+        column_config=unmatched_col_config,
+    )
+else:
+    st.success("🎉 目前監控清單中的所有目標班機皆已成功在空中定位！")
