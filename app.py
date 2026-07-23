@@ -344,15 +344,15 @@ with st.sidebar:
     )
 
 
-# 🔄 新增：自動持續輪詢至數字穩定的掃描邏輯
+# 🔄 自動持續輪詢至數字穩定的掃描邏輯（調高 max_rounds 至 10，預設連續 4 次穩定）
 def run_scan_process_until_stable(
     all_targets: list[str],
     is_full_rescan: bool = False,
-    max_rounds: int = 5,
-    stable_threshold: int = 3,
+    max_rounds: int = 10,
+    stable_threshold: int = 4,
 ):
     """
-    持續反覆查詢未查到的目標，直到「未查到數量」連續 stable_threshold 次沒有變化，或達到 max_rounds 止。
+    持續反覆查詢未查到的目標，直到「未查到數量」連續 4 次沒有變化，或達到 max_rounds 止。
     """
     if is_full_rescan:
         st.session_state["matched_dict"] = {}
@@ -385,13 +385,14 @@ def run_scan_process_until_stable(
             status_info.success("🎉 所有監控目標皆已成功定位！")
             break
 
-        # 條件 2：檢查未查到的數量是否與上一輪相同（判定穩定度）
+        # 條件 2：檢查未查到的數量是否與上一輪相同
         if current_unmatched_count == last_unmatched_count:
             stable_counter += 1
         else:
             stable_counter = 1
             last_unmatched_count = current_unmatched_count
 
+        # 連續 4 次數量沒變即判定為穩定
         if stable_counter >= stable_threshold:
             status_info.success(
                 f"✅ 未查到數量已連續 {stable_threshold} 輪維持在 {current_unmatched_count} 架，數據已達穩定狀態！"
@@ -401,7 +402,7 @@ def run_scan_process_until_stable(
 
         status_info.info(
             f"🔄 第 {current_round}/{max_rounds} 輪掃描中... "
-            f"（剩餘未查到：{current_unmatched_count} 架 | 穩定計數：{stable_counter}/{stable_threshold}）"
+            f"（剩餘未查到：{current_unmatched_count} 架 | 穩定進度：{stable_counter}/{stable_threshold}）"
         )
 
         total_pending = len(pending_targets)
@@ -412,7 +413,7 @@ def run_scan_process_until_stable(
 
             progress_bar.progress((i + 1) / total_pending)
 
-        # 每輪之間微小休眠，降低請求過快被封鎖的風險
+        # 輪詢微小間隔，維持 API 請求品質
         time.sleep(0.5)
 
     progress_bar.empty()
@@ -436,7 +437,7 @@ elif rescan_unmatched and currently_unmatched:
     if "flight_table" in st.session_state:
         del st.session_state["flight_table"]
 
-    run_scan_process_until_stable(targets, is_full_rescan=False)
+    run_scan_process_until_stable(currently_unmatched, is_full_rescan=False)
     st.rerun()
 
 
