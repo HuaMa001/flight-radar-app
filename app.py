@@ -33,6 +33,20 @@ def fetch_all_active_flights():
     return []
 
 
+# 建立全域 Session 以提升連線效率
+@st.cache_resource
+def get_http_session():
+    session = requests.Session()
+    session.headers.update({
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+    })
+    return session
+
+
+http_session = get_http_session()
+
+
 # --- 2. 輔助函式定義 ---
 def check_is_taiwan(text_or_code: str) -> bool:
     """精準判斷機場代碼或名稱是否屬於台灣 (已修復 URC 烏魯木齊誤報 Bug)"""
@@ -40,7 +54,6 @@ def check_is_taiwan(text_or_code: str) -> bool:
         return False
     s = str(text_or_code).upper().strip()
 
-    # 台灣主要機場 IATA 與 ICAO 代碼清單 (精準比對)
     tw_airport_codes = {
         # IATA (3碼)
         "TPE", "TSA", "KHH", "RMQ", "TNN", "HUN", "TTT", "MZG", "KIN", "CYI", "PIF", "LZN", "CMJ",
@@ -48,15 +61,12 @@ def check_is_taiwan(text_or_code: str) -> bool:
         "RCTP", "RCSS", "RCKH", "RCMQ", "RCNN", "RCHU", "RCFG", "RCBS", "RCFN", "RCKW", "RCMT", "RCLY"
     }
 
-    # 1. 精準比對代碼
     if s in tw_airport_codes:
         return True
 
-    # 2. 若為 4 碼 ICAO 代碼，且開頭必須是 RC (例如 RCTP)
     if len(s) == 4 and s.startswith("RC"):
         return True
 
-    # 3. 城市與國家名稱關鍵字比對
     tw_name_keywords = [
         "TAIPEI", "TAIWAN", "KAOHSIUNG", "TAICHUNG", "TAINAN",
         "台北", "台灣", "高雄", "台中", "台南"
@@ -64,7 +74,25 @@ def check_is_taiwan(text_or_code: str) -> bool:
     return any(kw in s for kw in tw_name_keywords)
 
 
+def fetch_planespotters_image(registration: str) -> str | None:
+    """【備用方案】從 Planespotters.net 免費 API 依據機身註冊號獲取照片"""
+    if not registration or registration == "未知":
+        return None
+    try:
+        url = f"https://api.planespotters.net/pub/photos/reg/{registration}"
+        res = http_session.get(url, timeout=4)
+        if res.status_code == 200:
+            data = res.json()
+            photos = data.get("photos", [])
+            if photos:
+                return photos[0].get("thumbnail_large", {}).get("src") or photos[0].get("thumbnail", {}).get("src")
+    except Exception:
+        pass
+    return None
+
+
 def fetch_direct_clickhandler(flight_obj_or_id) -> dict | None:
+    """向 API 索取詳細飛行狀態與起降機場資訊，並自動擷取飛機圖片"""
     try:
         if hasattr(flight_obj_or_id, "id"):
             details = fr_api.get_flight_details(flight_obj_or_id)
@@ -126,6 +154,17 @@ def fetch_direct_clickhandler(flight_obj_or_id) -> dict | None:
         f_reg = ac.get("registration") or "未知"
         ac_code = (ac.get("model") or {}).get("code") or "未知"
 
+        # --- 🖼️ 照片抓取邏輯 ---
+        image_url = None
+        images = ac.get("images") or {}
+        large_images = images.get("large") or images.get("medium") or []
+
+        if large_images and isinstance(large_images, list) and len(large_images) > 0:
+            image_url = large_images[0].get("src")
+
+        if not image_url and f_reg != "未知":
+            image_url = fetch_planespotters_image(f_reg)
+
         return {
             "origin": origin,
             "destination": destination,
@@ -136,6 +175,7 @@ def fetch_direct_clickhandler(flight_obj_or_id) -> dict | None:
             "f_num": f_num,
             "f_reg": f_reg,
             "ac_code": ac_code,
+            "image_url": image_url,
         }
     except Exception:
         return None
@@ -174,6 +214,7 @@ def search_single_target_worker(target_raw: str, all_flights: list) -> dict | No
 
                 return {
                     "監控目標": target_raw,
+                    "機身照片": details["image_url"],
                     "航班號": (
                         details["f_num"]
                         if details["f_num"] != "未知"
@@ -195,17 +236,11 @@ def search_single_target_worker(target_raw: str, all_flights: list) -> dict | No
                     "_is_taiwan": is_taiwan,
                 }
 
-    # 2. 若廣播數據未抓到，才使用 Web API 反查
+    # 2. 線上反查
     search_url = f"https://www.flightradar24.com/v1/search/web/find?query={target_raw}"
-    headers = {
-        "User-Agent": (
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-            " (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-        )
-    }
 
     try:
-        res = requests.get(search_url, headers=headers, timeout=4)
+        res = http_session.get(search_url, timeout=4)
         if res.status_code == 200:
             results = sorted(
                 res.json().get("results", []),
@@ -228,6 +263,7 @@ def search_single_target_worker(target_raw: str, all_flights: list) -> dict | No
 
                             return {
                                 "監控目標": target_raw,
+                                "機身照片": details["image_url"],
                                 "航班號": (
                                     details["f_num"]
                                     if details["f_num"] != "未知"
@@ -366,12 +402,10 @@ def run_scan_process_until_stable(
         pending_targets = [t for t in all_targets if t not in matched_keys]
         current_unmatched_count = len(pending_targets)
 
-        # 1. 完全查完提前結束
         if current_unmatched_count == 0:
             status_info.success("🎉 所有監控目標皆已成功定位！")
             break
 
-        # 2. 判斷穩定度
         if current_unmatched_count == last_unmatched_count:
             stable_counter += 1
         else:
@@ -390,14 +424,12 @@ def run_scan_process_until_stable(
             f"（剩餘未查到：{current_unmatched_count} 架 | 穩定進度：{stable_counter}/{stable_threshold}）"
         )
 
-        # 每輪重新取得最新的全球空域快照
         fetch_all_active_flights.clear()
         snapshot = fetch_all_active_flights()
 
         total_pending = len(pending_targets)
         completed_count = 0
 
-        # 🚀 使用 ThreadPoolExecutor 同時併行查詢所有待查目標
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             future_to_target = {
                 executor.submit(
@@ -472,7 +504,7 @@ if taiwan_count > 0:
 
 st.divider()
 
-# --- 1. 在空中航班（地圖 + 表格互動） ---
+# --- 1. 在空中航班（地圖 + 表格 + 照片預覽） ---
 if not df_matched.empty:
     df_sorted = (
         df_matched.sort_values(
@@ -484,8 +516,9 @@ if not df_matched.empty:
     center_lat = df_matched["lat"].mean()
     center_lon = df_matched["lon"].mean()
     zoom_level = 2.2
-    selected_flight_number = None
+    selected_row = None
 
+    # 點擊表格的互動鎖定
     if (
         "flight_table" in st.session_state
         and st.session_state["flight_table"].get("selection", {}).get("rows")
@@ -498,13 +531,30 @@ if not df_matched.empty:
                 center_lat = selected_row["lat"]
                 center_lon = selected_row["lon"]
                 zoom_level = 7.5
-                selected_flight_number = selected_row["航班號"]
 
     st.subheader("🗺️ 飛機即時位置雷達地圖")
-    if selected_flight_number:
-        st.success(
-            f"🎯 **地圖已自動定位至航班：{selected_flight_number}** (座標: {center_lat:.2f}, {center_lon:.2f})"
-        )
+    
+    # 🎯 點擊航班時顯示詳細資訊與照片大圖
+    if selected_row is not None:
+        st.info(f"🎯 **已定位至航班：{selected_row['航班號']} ({selected_row['機身註冊號']})**")
+        
+        detail_col1, detail_col2 = st.columns([1, 2])
+        with detail_col1:
+            if selected_row["機身照片"]:
+                st.image(selected_row["機身照片"], caption=f"機身註冊號：{selected_row['機身註冊號']}", use_container_width=True)
+            else:
+                st.warning("📷 尚無此機身之公開照片庫資料")
+        
+        with detail_col2:
+            st.markdown(f"""
+            - **航班號**：`{selected_row['航班號']}`
+            - **機身註冊號**：`{selected_row['機身註冊號']}`
+            - **機型**：`{selected_row['機型']}`
+            - **航線**：**{selected_row['航線 (出發➔到達)']}**
+            - **即時高度/速度**：`{selected_row['高度 (ft)']} ft` / `{selected_row['地速 (kts)']} kts`
+            - **降落台灣狀態**：{selected_row['降落台灣']}
+            """)
+        st.divider()
 
     layer = pdk.Layer(
         "ScatterplotLayer",
@@ -557,9 +607,10 @@ if not df_matched.empty:
     )
 
     st.subheader("🟢 在空中/飛行中航班詳細清單")
-    st.info("💡 **點擊下方清單中任意一列航班，地圖會自動飛過去並鎖定該飛機！**")
+    st.info("💡 **點擊下方表格任意航班，表格會自動載入照片、地圖會跳轉至飛機位置！**")
 
     ordered_cols = [
+        "機身照片",
         "降落台灣",
         "監控目標",
         "航班號",
@@ -571,17 +622,19 @@ if not df_matched.empty:
     display_df = df_sorted[ordered_cols].copy()
     display_df.insert(0, "編號", range(1, len(display_df) + 1))
 
+    # 🖼️ 使用 ImageColumn 讓縮圖直接內嵌於表格內
     matched_col_config = {
-        "編號": st.column_config.NumberColumn("編號", width=60, format="%d"),
-        "降落台灣": st.column_config.TextColumn("降落台灣", width=130),
-        "監控目標": st.column_config.TextColumn("監控目標", width=120),
-        "航班號": st.column_config.TextColumn("航班號", width=120),
-        "機身註冊號": st.column_config.TextColumn("機身註冊號", width=130),
-        "機型": st.column_config.TextColumn("機型", width=100),
+        "編號": st.column_config.NumberColumn("編號", width=50, format="%d"),
+        "機身照片": st.column_config.ImageColumn("機身照片", width=90, help="點選該列可在上方鎖定地圖與放大照片"),
+        "降落台灣": st.column_config.TextColumn("降落台灣", width=120),
+        "監控目標": st.column_config.TextColumn("監控目標", width=110),
+        "航班號": st.column_config.TextColumn("航班號", width=110),
+        "機身註冊號": st.column_config.TextColumn("機身註冊號", width=120),
+        "機型": st.column_config.TextColumn("機型", width=90),
         "航線 (出發➔到達)": st.column_config.TextColumn(
-            "航線 (出發➔到達)", width=240
+            "航線 (出發➔到達)", width=220
         ),
-        "資料來源": st.column_config.TextColumn("資料來源", width=180),
+        "資料來源": st.column_config.TextColumn("資料來源", width=160),
     }
 
     def color_taiwan_col(val):
@@ -610,21 +663,4 @@ if unmatched_targets:
     )
 
     df_unmatched = pd.DataFrame({
-        "編號": list(range(1, len(unmatched_targets) + 1)),
-        "目標編號": unmatched_targets,
-        "當前狀態": "未在空中飛行 / 尚未起飛 / 應答機未開啟",
-    })
-
-    unmatched_col_config = {
-        "編號": st.column_config.NumberColumn("編號", width=60, format="%d"),
-        "目標編號": st.column_config.TextColumn("目標編號", width=120),
-        "當前狀態": st.column_config.TextColumn("當前狀態", width=1000),
-    }
-
-    st.dataframe(
-        df_unmatched,
-        use_container_width=True,
-        hide_index=True,
-        column_config=unmatched_col_config,
-    )
-    
+      
