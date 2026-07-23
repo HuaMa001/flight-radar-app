@@ -1,4 +1,5 @@
 from concurrent.futures import ThreadPoolExecutor, as_completed
+import time
 import pandas as pd
 import pydeck as pdk
 import requests
@@ -128,6 +129,7 @@ def search_single_target(target: str, all_flights: list) -> dict | None:
     if not target:
         return None
 
+    # 1. 廣播池比對
     for flight in all_flights:
         f_num = (getattr(flight, "number", "") or "").upper()
         f_callsign = (getattr(flight, "callsign", "") or "").upper()
@@ -163,6 +165,7 @@ def search_single_target(target: str, all_flights: list) -> dict | None:
                     "_is_taiwan": is_taiwan,
                 }
 
+    # 2. Web API 詳細反查
     search_url = (
         f"https://www.flightradar24.com/v1/search/web/find?query={target}"
     )
@@ -219,10 +222,10 @@ def search_single_target(target: str, all_flights: list) -> dict | None:
     return None
 
 
-# --- 3. UI 介面與側邊欄 (必須在執行區塊前定義按鈕與 targets) ---
+# --- 3. UI 介面與側邊欄設定 ---
 st.title("✈️ FlightRadar24 智慧航班與降落台灣監測 APP")
 st.caption(
-    "🟢 完全免費 / 免 API Key | 支援機身編號雙重反查、互動地圖與多線程爆速查詢"
+    "🟢 完全免費 / 免 API Key | 支援分批每 5 個目標平行查詢"
 )
 
 with st.sidebar:
@@ -291,119 +294,134 @@ with st.sidebar:
     )
 
     st.divider()
-    # 關鍵：先定義 scan_button
     scan_button = st.button(
         "🔄 掃描空中即時動態", type="primary", use_container_width=True
     )
 
-# 關鍵：先定義 targets
 targets = [f.strip().upper() for f in flight_input.split("\n") if f.strip()]
 
 
-# --- 4. 主程式執行區塊 (放在最下方) ---
+# --- 4. 主程式執行區塊 (分批查詢) ---
 if scan_button or "first_run" not in st.session_state:
     st.session_state["first_run"] = True
 
-    with st.spinner(
-        "正從 FlightRadar24 抓取全球即時空域數據並進行多線程比對..."
-    ):
-        try:
-            all_active_flights = fr_api.get_flights()
-            matched_results = []
+    status_text = st.empty()
+    progress_bar = st.progress(0)
 
-            def worker(t):
-                return search_single_target(t, all_active_flights)
+    try:
+        status_text.text("正從 FlightRadar24 抓取全球即時空域數據...")
+        all_active_flights = fr_api.get_flights()
+        matched_results = []
 
-            progress_bar = st.progress(0)
-            completed_count = 0
+        # ⚡ 關鍵修改：將 targets 依每 5 個分成一組 (Chunks)
+        batch_size = 5
+        target_batches = [
+            targets[i : i + batch_size]
+            for i in range(0, len(targets), batch_size)
+        ]
 
-            # 每次平行搜尋 5 個
-            with ThreadPoolExecutor(max_workers=5) as executor:
-                futures = [executor.submit(worker, t) for t in targets]
+        total_processed = 0
+
+        # 依序處理每一批（每批 5 個）
+        for batch_index, batch in enumerate(target_batches, start=1):
+            status_text.text(
+                f"⏳ 正在查詢第 {batch_index}/{len(target_batches)} 批目標 ({', '.join(batch)})..."
+            )
+
+            # 使用 5 個 worker 平行查詢這一批 5 個飛機
+            with ThreadPoolExecutor(max_workers=batch_size) as executor:
+                futures = [
+                    executor.submit(search_single_target, t, all_active_flights)
+                    for t in batch
+                ]
                 for future in as_completed(futures):
                     res = future.result()
                     if res:
                         matched_results.append(res)
-                    completed_count += 1
-                    progress_bar.progress(completed_count / len(targets))
+                    total_processed += 1
+                    progress_bar.progress(total_processed / len(targets))
 
-            progress_bar.empty()
-            df = pd.DataFrame(matched_results)
+        progress_bar.empty()
+        status_text.empty()
 
-            col1, col2, col3 = st.columns(3)
-            col1.metric("監控目標總數", f"{len(targets)} 架")
-            col2.metric("當前空中/剛降落", f"{len(df)} 架")
-            col3.metric(
-                "預計/已降落台灣",
-                f"{df['_is_taiwan'].sum() if not df.empty else 0} 架",
+        # 轉為 DataFrame
+        df = pd.DataFrame(matched_results)
+
+        # 頂部數據看板
+        col1, col2, col3 = st.columns(3)
+        col1.metric("監控目標總數", f"{len(targets)} 架")
+        col2.metric("當前空中/剛降落", f"{len(df)} 架")
+        col3.metric(
+            "預計/已降落台灣",
+            f"{df['_is_taiwan'].sum() if not df.empty else 0} 架",
+        )
+
+        st.divider()
+
+        if not df.empty:
+            st.subheader(
+                "🗺️ 飛機即時位置雷達地圖 (將滑鼠移至點上可查看詳情)"
             )
 
-            st.divider()
+            layer = pdk.Layer(
+                "ScatterplotLayer",
+                data=df,
+                get_position=["lon", "lat"],
+                get_color="[230, 57, 70, 210]",
+                get_radius=70000,
+                pickable=True,
+                auto_highlight=True,
+            )
 
-            if not df.empty:
-                st.subheader(
-                    "🗺️ 飛機即時位置雷達地圖 (將滑鼠移至點上可查看詳情)"
+            center_lat = df["lat"].mean() if not df.empty else 23.5
+            center_lon = df["lon"].mean() if not df.empty else 121.0
+
+            view_state = pdk.ViewState(
+                latitude=center_lat,
+                longitude=center_lon,
+                zoom=2.2,
+                pitch=0,
+            )
+
+            hover_tooltip = {
+                "html": """
+                <div style="font-family: Arial, sans-serif; padding: 6px 10px; line-height: 1.5;">
+                    <span style="font-size: 14px; font-weight: bold; color: #ff4b4b;">✈️ {航班號}</span> 
+                    <span style="font-size: 12px; color: #aaa;">({機身註冊號})</span><br/>
+                    <b>📍 航線:</b> {航線 (出發➔到達)}<br/>
+                    <b>🛩️ 機型:</b> {機型}<br/>
+                    <b>📏 高度:</b> {高度 (ft)} ft | <b>⚡ 地速:</b> {地速 (kts)} kts<br/>
+                    <b>🇹🇼 降落台灣:</b> {降落台灣}<br/>
+                    <span style="font-size: 10px; color: #888;">來源: {資料來源}</span>
+                </div>
+                """,
+                "style": {
+                    "backgroundColor": "rgba(15, 23, 42, 0.90)",
+                    "color": "white",
+                    "borderRadius": "8px",
+                    "boxShadow": "0px 4px 12px rgba(0,0,0,0.4)",
+                    "fontSize": "12px",
+                },
+            }
+
+            st.pydeck_chart(
+                pdk.Deck(
+                    layers=[layer],
+                    initial_view_state=view_state,
+                    map_style="https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json",
+                    tooltip=hover_tooltip,
                 )
+            )
 
-                layer = pdk.Layer(
-                    "ScatterplotLayer",
-                    data=df,
-                    get_position=["lon", "lat"],
-                    get_color="[230, 57, 70, 210]",
-                    get_radius=70000,
-                    pickable=True,
-                    auto_highlight=True,
-                )
+            st.subheader("📋 空中即時動態詳細清單")
+            display_df = df.drop(columns=["lat", "lon", "_is_taiwan"])
+            st.dataframe(
+                display_df, use_container_width=True, hide_index=True
+            )
+        else:
+            st.warning(
+                "⚠️ 目前清單中的飛機皆「不在空中飛行」（可能尚未起飛、已降落過久，或應答機未開啟）。"
+            )
 
-                center_lat = df["lat"].mean() if not df.empty else 23.5
-                center_lon = df["lon"].mean() if not df.empty else 121.0
-
-                view_state = pdk.ViewState(
-                    latitude=center_lat,
-                    longitude=center_lon,
-                    zoom=2.2,
-                    pitch=0,
-                )
-
-                hover_tooltip = {
-                    "html": """
-                    <div style="font-family: Arial, sans-serif; padding: 6px 10px; line-height: 1.5;">
-                        <span style="font-size: 14px; font-weight: bold; color: #ff4b4b;">✈️ {航班號}</span> 
-                        <span style="font-size: 12px; color: #aaa;">({機身註冊號})</span><br/>
-                        <b>📍 航線:</b> {航線 (出發➔到達)}<br/>
-                        <b>🛩️ 機型:</b> {機型}<br/>
-                        <b>📏 高度:</b> {高度 (ft)} ft | <b>⚡ 地速:</b> {地速 (kts)} kts<br/>
-                        <b>🇹🇼 降落台灣:</b> {降落台灣}<br/>
-                        <span style="font-size: 10px; color: #888;">來源: {資料來源}</span>
-                    </div>
-                    """,
-                    "style": {
-                        "backgroundColor": "rgba(15, 23, 42, 0.90)",
-                        "color": "white",
-                        "borderRadius": "8px",
-                        "boxShadow": "0px 4px 12px rgba(0,0,0,0.4)",
-                        "fontSize": "12px",
-                    },
-                }
-
-                st.pydeck_chart(
-                    pdk.Deck(
-                        layers=[layer],
-                        initial_view_state=view_state,
-                        map_style="https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json",
-                        tooltip=hover_tooltip,
-                    )
-                )
-
-                st.subheader("📋 空中即時動態詳細清單")
-                display_df = df.drop(columns=["lat", "lon", "_is_taiwan"])
-                st.dataframe(
-                    display_df, use_container_width=True, hide_index=True
-                )
-            else:
-                st.warning(
-                    "⚠️ 目前清單中的飛機皆「不在空中飛行」（可能尚未起飛、已降落過久，或應答機未開啟）。"
-                )
-
-        except Exception as e:
-            st.error(f"執行監測時發生錯誤: {str(e)}")
+    except Exception as e:
+        st.error(f"執行監測時發生錯誤: {str(e)}")
