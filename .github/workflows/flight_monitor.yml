@@ -25,8 +25,5 @@ jobs:
 
       - name: 執行監控並推播
         env:
-          DISCORD: ${{ secrets.DISCORD }}               # 👈 關鍵修正：準確對應你的 Secret 名稱
-          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD }} # 👈 雙重保險
+          DISCORD: ${{ secrets.DISCORD }} 
         run: python Bot.py
-
-
