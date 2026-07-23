@@ -2,8 +2,8 @@ name: FlightRadar24 Target Monitor
 
 on:
   schedule:
-    - cron: '*/30 * * * *' # 每 30 分鐘自動監控一次
-  workflow_dispatch: # 支援點擊按鈕手動測試
+    - cron: '*/30 * * * *' # 每 30 分鐘自動執行一次
+  workflow_dispatch: # 支援手動觸發測試
 
 jobs:
   monitor:
@@ -25,5 +25,8 @@ jobs:
 
       - name: 執行監控並推播
         env:
-          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD }}
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          DISCORD: ${{ secrets.DISCORD }}
+          TARGET_PLANES: ${{ vars.TARGET_PLANES }} # 👈 關鍵：自動載入 GitHub Variables 的清單
         run: python Bot.py
+        
