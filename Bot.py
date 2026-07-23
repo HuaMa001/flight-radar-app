@@ -11,7 +11,7 @@ DISCORD_WEBHOOK_URL = os.getenv(
 
 # 2. 監控目標清單 (機身號 / 註冊號 / 航班號)
 TARGETS = [
-    "B-KQU", "B-LRJ", "B-LJE", "HL7628", "B-18918", "B-18311", "B-18007", "B-5390",
+    "9M-LRU","B-KQU", "B-LRJ", "B-LJE", "HL7628", "B-18918", "B-18311", "B-18007", "B-5390",
     "JA872A", "B-17812", "B-16715", "JA880A", "JA731A", "JA875A", "JA614A", "9V-SWI",
     "9V-SWJ", "B-2032", "B-6091", "B-6093", "HL7732", "HL8071", "HS-TKQ", "HL7783",
     "VN-A897", "VN-A327", "B-6538", "PK-GMH", "PH-BVD", "9V-OJJ", "JA73AB", "JA894A",
@@ -23,15 +23,31 @@ fr_api = FlightRadar24API()
 
 
 def check_is_taiwan(text_or_code: str) -> bool:
-    """判斷機場代碼或名稱是否屬於台灣"""
+    """精準判斷機場代碼或名稱是否屬於台灣"""
     if not text_or_code or text_or_code == "未知":
         return False
-    s = str(text_or_code).upper()
-    tw_keywords = [
-        "RC", "TPE", "TSA", "KHH", "RMQ", "TNN", "HUN", "TTT", "MZG", "KIN",
-        "TAIPEI", "TAIWAN", "KAOHSIUNG"
-    ]
-    return any(kw in s for kw in tw_keywords)
+    s = str(text_or_code).upper().strip()
+
+    # 台灣常見機場 IATA 與 ICAO 代碼列表 (精準比對)
+    tw_airport_codes = {
+        # IATA (3碼)
+        "TPE", "TSA", "KHH", "RMQ", "TNN", "HUN", "TTT", "MZG", "KIN", "CYI", "PIF", "LZN", "CMJ",
+        # ICAO (4碼)
+        "RCTP", "RCSS", "RCKH", "RCMQ", "RCNN", "RCHU", "RCFG", "RCBS", "RCFN", "RCKW", "RCMT", "RCLY"
+    }
+
+    # 1. 檢查是否完全符合台灣機場代碼
+    if s in tw_airport_codes:
+        return True
+
+    # 2. 若為 4 碼 ICAO 代碼，且開頭必須是 RC (例如 RCTP，不會誤抓 3 碼的 URC)
+    if len(s) == 4 and s.startswith("RC"):
+        return True
+
+    # 3. 城市名稱關鍵字比對
+    tw_name_keywords = ["TAIPEI", "TAIWAN", "KAOHSIUNG", "TAICHUNG", "TAINAN", "台北", "台灣", "高雄", "台中", "台南"]
+    return any(kw in s for kw in tw_name_keywords)
+)
 
 
 def fetch_direct_clickhandler(flight_obj_or_id) -> dict | None:
