@@ -7,7 +7,7 @@ from FlightRadarAPI import FlightRadar24API
 
 # --- 1. 頁面基本設定與初始化 ---
 st.set_page_config(
-    page_title="FlightRadar24監測",
+    page_title="FlightRadar24 智慧航班監測 APP",
     page_icon="✈️",
     layout="wide",
 )
@@ -254,8 +254,7 @@ def search_single_target_cached(target_raw: str, _all_flights):
 
 
 # --- 3. UI 介面與側邊欄設定 ---
-st.title("✈️ FlightRadar24 監測 ")
-st.caption("點擊表格清單可自動跳轉定位至地圖位置")
+st.title("✈️ FlightRadar24 降落台灣監測")
 
 if "matched_dict" not in st.session_state:
     st.session_state["matched_dict"] = {}
@@ -315,7 +314,7 @@ clean_default_flights = "\n".join(
 
 with st.sidebar:
     st.header("⚙️ 監控清單")
-    st.info("💡 輸入機身編號")
+    st.info("💡 輸入機身編號/註冊號")
 
     flight_input = st.text_area(
         "飛機代碼清單 (每行一班)", value=clean_default_flights, height=280
@@ -339,7 +338,7 @@ with st.sidebar:
     # 按鈕 2: 僅補查未查到的目標
     unmatched_count = len(currently_unmatched)
     rescan_unmatched = st.button(
-        f" 補查「未查到」目標 ({unmatched_count} 架)",
+        f" 僅補查「未查到」目標 ({unmatched_count} 架)",
         type="secondary",
         use_container_width=True,
         disabled=(unmatched_count == 0),
@@ -382,13 +381,11 @@ def run_scan_process(scan_targets: list[str], is_full_rescan: bool = False):
 
 # 觸發邏輯處理
 if "has_run_once" not in st.session_state:
-    # 首次開啟頁面：自動執行初次全量搜尋
     st.session_state["has_run_once"] = True
     run_scan_process(targets, is_full_rescan=True)
     st.rerun()
 
 elif full_search_button:
-    # 點擊「🔍 依輸入清單重新搜尋」：清空舊選擇與資料，搜尋全新輸入框清單
     if "flight_table" in st.session_state:
         del st.session_state["flight_table"]
 
@@ -396,7 +393,6 @@ elif full_search_button:
     st.rerun()
 
 elif rescan_unmatched and currently_unmatched:
-    # 點擊「 僅補查未查到目標」：保留舊成果，僅補查漏抓飛機
     if "flight_table" in st.session_state:
         del st.session_state["flight_table"]
 
@@ -492,6 +488,7 @@ if not df_matched.empty:
             <span style="font-size: 12px; color: #aaa;">({機身註冊號})</span><br/>
             <b>📍 航線:</b> {航線 (出發➔到達)}<br/>
             <b>🛩️ 機型:</b> {機型}<br/>
+            <b>📏 高度:</b> {高度 (ft)} ft | <b>⚡ 地速:</b> {地速 (kts)} kts<br/>
             <b>🇹🇼 降落台灣:</b> {降落台灣}<br/>
             <span style="font-size: 10px; color: #888;">來源: {資料來源}</span>
         </div>
@@ -520,22 +517,23 @@ if not df_matched.empty:
     st.subheader("🟢 在空中/飛行中航班詳細清單")
     st.info("💡 **點擊下方清單中任意一列航班，地圖會自動飛過去並鎖定該飛機！**")
 
-    display_df = df_sorted.drop(columns=["lat", "lon", "_is_taiwan"]).copy()
+    # ✨ 移除高度 (ft) 與 地速 (kts) 欄位
+    display_df = df_sorted.drop(
+        columns=["lat", "lon", "_is_taiwan", "高度 (ft)", "地速 (kts)"]
+    ).copy()
     display_df.insert(0, "編號", range(1, len(display_df) + 1))
 
     matched_col_config = {
         "編號": st.column_config.NumberColumn("編號", width=60, format="%d"),
-        "監控目標": st.column_config.TextColumn("監控目標", width=110),
-        "航班號": st.column_config.TextColumn("航班號", width=100),
-        "機身註冊號": st.column_config.TextColumn("機身註冊號", width=120),
-        "機型": st.column_config.TextColumn("機型", width=90),
+        "監控目標": st.column_config.TextColumn("監控目標", width=120),
+        "航班號": st.column_config.TextColumn("航班號", width=120),
+        "機身註冊號": st.column_config.TextColumn("機身註冊號", width=130),
+        "機型": st.column_config.TextColumn("機型", width=100),
         "航線 (出發➔到達)": st.column_config.TextColumn(
-            "航線 (出發➔到達)", width=220
+            "航線 (出發➔到達)", width=240
         ),
-        "高度 (ft)": st.column_config.NumberColumn("高度 (ft)", width=100),
-        "地速 (kts)": st.column_config.NumberColumn("地速 (kts)", width=100),
-        "降落台灣": st.column_config.TextColumn("降落台灣", width=120),
-        "資料來源": st.column_config.TextColumn("資料來源", width=160),
+        "降落台灣": st.column_config.TextColumn("降落台灣", width=130),
+        "資料來源": st.column_config.TextColumn("資料來源", width=180),
     }
 
     def color_taiwan_col(val):
