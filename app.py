@@ -339,7 +339,7 @@ with st.sidebar:
     # 按鈕 2: 僅補查未查到的目標
     unmatched_count = len(currently_unmatched)
     rescan_unmatched = st.button(
-        f"⚡ 僅補查「未查到」目標 ({unmatched_count} 架)",
+        f"⚡ 補查「未查到」目標 ({unmatched_count} 架)",
         type="secondary",
         use_container_width=True,
         disabled=(unmatched_count == 0),
@@ -396,7 +396,7 @@ elif full_search_button:
     st.rerun()
 
 elif rescan_unmatched and currently_unmatched:
-    # 點擊「⚡ 僅補查未查到目標」：保留舊成果，僅補查漏抓飛機
+    # 點擊「 僅補查未查到目標」：保留舊成果，僅補查漏抓飛機
     if "flight_table" in st.session_state:
         del st.session_state["flight_table"]
 
