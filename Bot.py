@@ -4,7 +4,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import requests
 from FlightRadarAPI import FlightRadar24API
 
-# 1. 讀取 GitHub Secrets 金鑰
+# 1. 讀取 GitHub Secrets 金鑰 (優先讀取 DISCORD_WEBHOOK_URL，若無則讀取 DISCORD)
 DISCORD_WEBHOOK_URL = os.getenv(
     "DISCORD_WEBHOOK_URL", os.getenv("DISCORD", "")
 )
@@ -12,7 +12,7 @@ DISCORD_WEBHOOK_URL = os.getenv(
 # 2. 動態讀取 GitHub Repository Variables (TARGET_PLANES)
 raw_targets = os.getenv("TARGET_PLANES", "")
 
-if raw_targets.strip():
+if raw_targets and raw_targets.strip():
     # 自動支援「換行分隔」或「逗號分隔」的飛機清單
     TARGETS = [
         t.strip().upper()
@@ -22,7 +22,7 @@ if raw_targets.strip():
     print(f"📋 成功從 GitHub Variables 載入 {len(TARGETS)} 架目標飛機！")
 else:
     # 若變數未設定，啟用備用清單
-    print("ℹ️ 未偵測到 TARGET_PLANES 變數，啟用內建預設清單。")
+    print("ℹ️ 未偵測到 TARGET_PLANES 變數，自動啟用內建預設清單。")
     TARGETS = [
         "B-KQU", "B-LRJ", "B-LJE", "HL7628", "B-18918", "B-18311", "B-18007", "B-5390",
         "JA872A", "B-17812", "B-16715", "JA880A", "JA731A", "JA875A", "JA614A", "9V-SWI",
@@ -52,7 +52,7 @@ def check_is_taiwan(text_or_code: str) -> bool:
     if s in tw_airport_codes:
         return True
 
-    # 2. 若為 4 碼 ICAO 代碼，且開頭必須是 RC (如 RCTP，不會誤抓 3 碼的 URC)
+    # 2. 若為 4 碼 ICAO 代碼，且開頭必須是 RC (如 RCTP)
     if len(s) == 4 and s.startswith("RC"):
         return True
 
@@ -315,4 +315,4 @@ def main():
 
 if __name__ == "__main__":
     main()
-        
+    
