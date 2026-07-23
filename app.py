@@ -33,7 +33,6 @@ def fetch_all_active_flights():
     return []
 
 
-# --- 2. 輔助函式定義 ---
 def check_is_taiwan(text_or_code: str) -> bool:
     if not text_or_code or text_or_code == "未知":
         return False
