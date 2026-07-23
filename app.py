@@ -23,9 +23,9 @@ fr_api = init_api()
 
 # --- 2. Session State 狀態初始化 ---
 if "current_index" not in st.session_state:
-    st.session_state["current_index"] = 0  # 紀錄目前查到第幾筆
+    st.session_state["current_index"] = 0
 if "matched_results" not in st.session_state:
-    st.session_state["matched_results"] = []  # 儲存已查到的飛機資料
+    st.session_state["matched_results"] = []
 
 
 # --- 3. 輔助函式定義 ---
@@ -368,6 +368,15 @@ st.progress(min(current_idx / len(targets), 1.0) if len(targets) > 0 else 0)
 
 st.divider()
 
+# 通用的欄位寬度設定
+col_config = {
+    "編號": st.column_config.NumberColumn(
+        "編號",
+        width="small",  # ⚡ 壓縮編號欄位寬度
+        format="%d",
+    )
+}
+
 if current_idx == 0:
     st.info("👈 請點擊側邊欄的「▶️ 查詢下 5 個目標」開始檢索！")
 else:
@@ -402,6 +411,7 @@ else:
                 <span style="font-size: 12px; color: #aaa;">({機身註冊號})</span><br/>
                 <b>📍 航線:</b> {航線 (出發➔到達)}<br/>
                 <b>🛩️ 機型:</b> {機型}<br/>
+                <b>📏 高度:</b> {高度 (ft)} ft | <b>⚡ 地速:</b> {地速 (kts)} kts<br/>
                 <b>🇹🇼 降落台灣:</b> {降落台灣}<br/>
                 <span style="font-size: 10px; color: #888;">來源: {資料來源}</span>
             </div>
@@ -425,26 +435,36 @@ else:
         )
 
         st.subheader("🟢 在空中/飛行中航班詳細清單")
-        
-        # ⚡ 增加「編號」欄位（從 1 開始遞增）
+
         display_df = df_matched.drop(columns=["lat", "lon", "_is_taiwan"]).copy()
         display_df.insert(0, "編號", range(1, len(display_df) + 1))
-        
-        st.dataframe(display_df, use_container_width=True, hide_index=True)
+
+        st.dataframe(
+            display_df,
+            use_container_width=True,
+            hide_index=True,
+            column_config=col_config,  # ⚡ 應用小寬度設定
+        )
 
     # --- 2. 獨立表格顯示：已查詢但未查到的飛機 ---
     if unmatched_targets:
         st.subheader("🔴 已查詢但「未在空中/無訊號」之目標清單")
-        
-        # ⚡ 增加「編號」欄位（從 1 開始遞增）
+
         df_unmatched = pd.DataFrame({
             "編號": list(range(1, len(unmatched_targets) + 1)),
             "目標編號": unmatched_targets,
             "當前狀態": "未在空中飛行 / 尚未起飛 / 應答機未開啟",
         })
-        
+
         st.dataframe(
-            df_unmatched, 
-            use_container_width=True, 
-            hide_index=True
+            df_unmatched,
+            use_container_width=True,
+            hide_index=True,
+            column_config={
+                **col_config,
+                "當前狀態": st.column_config.TextColumn(
+                    "當前狀態",
+                    width="large",  # 讓文字較長的的欄位分到較多空間
+                ),
+            },
         )
