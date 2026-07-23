@@ -302,7 +302,7 @@ st.title("✈️ FlightRadar24 彩繪機降落台灣監測")
 if "matched_dict" not in st.session_state:
     st.session_state["matched_dict"] = {}
 
-# 預設目標清單 (全區塊嚴格對齊，防止縮排錯誤)
+# 預設目標清單
 DEFAULT_TARGETS = [
     "B-KQU", "B-LRJ", "B-LJE", "HL7628", "B-18918", "B-18311", "B-18007",
     "B-5390", "JA872A", "B-17812", "B-16715", "JA880A", "JA731A", "JA875A",
@@ -541,17 +541,17 @@ if not df_matched.empty:
     )
 
     hover_tooltip = {
-        "html": """
-        <div style="font-family: Arial, sans-serif; padding: 6px 10px; line-height: 1.5;">
-            <span style="font-size: 14px; font-weight: bold; color: #ff4b4b;">✈️ {航班號}</span> 
-            <span style="font-size: 12px; color: #aaa;">({機身註冊號})</span><br/>
-            <b>📍 航線:</b> {航線 (出發➔到達)}<br/>
-            <b>🛩️ 機型:</b> {機型}<br/>
-            <b>📏 高度:</b> {高度 (ft)} ft | <b>⚡ 地速:</b> {地速 (kts)} kts<br/>
-            <b>🇹🇼 降落台灣:</b> {降落台灣}<br/>
-            <span style="font-size: 10px; color: #888;">來源: {資料來源}</span>
-        </div>
-        """,
+        "html": (
+            '<div style="font-family: Arial, sans-serif; padding: 6px 10px; line-height: 1.5;">'
+            '<span style="font-size: 14px; font-weight: bold; color: #ff4b4b;">✈️ {航班號}</span> '
+            '<span style="font-size: 12px; color: #aaa;">({機身註冊號})</span><br/>'
+            '<b>📍 航線:</b> {航線 (出發➔到達)}<br/>'
+            '<b>🛩️ 機型:</b> {機型}<br/>'
+            '<b>📏 高度:</b> {高度 (ft)} ft | <b>⚡ 地速:</b> {地速 (kts)} kts<br/>'
+            '<b>🇹🇼 降落台灣:</b> {降落台灣}<br/>'
+            '<span style="font-size: 10px; color: #888;">來源: {資料來源}</span>'
+            '</div>'
+        ),
         "style": {
             "backgroundColor": "rgba(15, 23, 42, 0.90)",
             "color": "white",
@@ -561,16 +561,13 @@ if not df_matched.empty:
         },
     }
 
-    map_key = f"map_{center_lat:.4f}_{center_lon:.4f}_{zoom_level}"
-
     st.pydeck_chart(
         pdk.Deck(
             layers=[layer],
             initial_view_state=view_state,
             map_style="https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json",
             tooltip=hover_tooltip,
-        ),
-        key=map_key,
+        )
     )
 
     st.subheader("🟢 在空中/飛行中航班詳細清單")
@@ -597,9 +594,7 @@ if not df_matched.empty:
         "航班號": st.column_config.TextColumn("航班號", width=110),
         "機身註冊號": st.column_config.TextColumn("機身註冊號", width=120),
         "機型": st.column_config.TextColumn("機型", width=90),
-        "航線 (出發➔到達)": st.column_config.TextColumn(
-            "航線 (出發➔到達)", width=220
-        ),
+        "航線 (出發➔到達)": st.column_config.TextColumn("航線 (出發➔到達)", width=220),
         "資料來源": st.column_config.TextColumn("資料來源", width=160),
     }
 
@@ -619,4 +614,10 @@ if not df_matched.empty:
         column_config=matched_col_config,
         key="flight_table",
         on_select="rerun",
-        selec
+        selection_mode="single-row",
+    )
+
+st.divider()
+
+# --- 2. 確定未在空中的飛機清單（常駐顯示） ---
+st.subheader(f"🔴 確定未在空中 / 未起飛之目
