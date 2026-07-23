@@ -255,7 +255,7 @@ def search_single_target_cached(target_raw: str, _all_flights):
 
 # --- 3. UI 介面與側邊欄設定 ---
 st.title("✈️ FlightRadar24 智慧航班與降落台灣監測 APP")
-st.caption("🟢 完全免費 / 免 API Key | 具備精準補查未命中目標機制")
+st.caption("🟢 完全免費 / 免 API Key | 點擊表格清單可自動跳轉定位至地圖位置")
 
 if "matched_dict" not in st.session_state:
     st.session_state["matched_dict"] = {}
@@ -329,7 +329,7 @@ with st.sidebar:
 
     st.divider()
 
-    # 保留唯一按鈕：僅補查未找到的目標
+    # 補查按鈕
     unmatched_count = len(currently_unmatched)
     rescan_unmatched = st.button(
         f"⚡ 僅重新掃描「未查到」目標 ({unmatched_count} 架)",
@@ -373,12 +373,19 @@ def run_scan_process(scan_targets: list[str], is_full_rescan: bool = False):
     status_info.empty()
 
 
-# 觸發邏輯：首次開啟時執行一次全量掃描，之後僅響應補查按鈕
+# 觸發邏輯：首次開啟執行一次全量掃描，之後按鈕觸發補查
 if "has_run_once" not in st.session_state:
     st.session_state["has_run_once"] = True
     run_scan_process(targets, is_full_rescan=True)
-elif rescan_unmatched and currently_unmatched:
+    st.rerun()  # 強制重新渲染，確保 1 次點擊即同步 UI
+
+if rescan_unmatched and currently_unmatched:
+    # 掃描前清除舊的表格選擇，避免索引錯位
+    if "flight_table" in st.session_state:
+        del st.session_state["flight_table"]
+
     run_scan_process(currently_unmatched, is_full_rescan=False)
+    st.rerun()  # ✨ 關鍵改動：掃描結束立刻 rerun，達成單點即時更新！
 
 
 # --- 4. 數據彙整與畫面顯示區塊 ---
@@ -408,27 +415,57 @@ if taiwan_count > 0:
 
 st.divider()
 
-# --- 1. 在空中航班（地圖 + 表格） ---
+# --- 1. 在空中航班（地圖 + 表格互動） ---
 if not df_matched.empty:
+    df_sorted = (
+        df_matched.sort_values(
+            by=["_is_taiwan", "監控目標"], ascending=[False, True]
+        )
+        .reset_index(drop=True)
+    )
+
+    # 預設廣域焦點
+    center_lat = df_matched["lat"].mean()
+    center_lon = df_matched["lon"].mean()
+    zoom_level = 2.2
+    selected_flight_number = None
+
+    # 檢查表格是否有選取特定列
+    if (
+        "flight_table" in st.session_state
+        and st.session_state["flight_table"].get("selection", {}).get("rows")
+    ):
+        selected_rows = st.session_state["flight_table"]["selection"]["rows"]
+        if selected_rows:
+            selected_idx = selected_rows[0]
+            if selected_idx < len(df_sorted):
+                selected_row = df_sorted.iloc[selected_idx]
+                center_lat = selected_row["lat"]
+                center_lon = selected_row["lon"]
+                zoom_level = 7.5  # 拉近鏡頭
+                selected_flight_number = selected_row["航班號"]
+
     st.subheader("🗺️ 飛機即時位置雷達地圖")
+    if selected_flight_number:
+        st.success(
+            f"🎯 **地圖已自動定位至航班：{selected_flight_number}** (座標:"
+            f" {center_lat:.2f}, {center_lon:.2f})"
+        )
 
     layer = pdk.Layer(
         "ScatterplotLayer",
         data=df_matched,
         get_position=["lon", "lat"],
-        get_color="[230, 57, 70, 210]",
-        get_radius=70000,
+        get_color="[230, 57, 70, 220]",
+        get_radius=60000,
         pickable=True,
         auto_highlight=True,
     )
 
-    center_lat = df_matched["lat"].mean()
-    center_lon = df_matched["lon"].mean()
-
     view_state = pdk.ViewState(
         latitude=center_lat,
         longitude=center_lon,
-        zoom=2.2,
+        zoom=zoom_level,
         pitch=0,
     )
 
@@ -453,25 +490,23 @@ if not df_matched.empty:
         },
     }
 
+    map_key = f"map_{center_lat:.4f}_{center_lon:.4f}_{zoom_level}"
+
     st.pydeck_chart(
         pdk.Deck(
             layers=[layer],
             initial_view_state=view_state,
             map_style="https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json",
             tooltip=hover_tooltip,
-        )
+        ),
+        key=map_key,
     )
 
     st.subheader("🟢 在空中/飛行中航班詳細清單")
+    st.info("💡 **點擊下方清單中任意一列航班，地圖會自動飛過去並鎖定該飛機！**")
 
-    df_sorted = (
-        df_matched.sort_values(
-            by=["_is_taiwan", "監控目標"], ascending=[False, True]
-        )
-        .drop(columns=["lat", "lon", "_is_taiwan"])
-        .reset_index(drop=True)
-    )
-    df_sorted.insert(0, "編號", range(1, len(df_sorted) + 1))
+    display_df = df_sorted.drop(columns=["lat", "lon", "_is_taiwan"]).copy()
+    display_df.insert(0, "編號", range(1, len(display_df) + 1))
 
     matched_col_config = {
         "編號": st.column_config.NumberColumn("編號", width=60, format="%d"),
@@ -493,7 +528,7 @@ if not df_matched.empty:
             return "background-color: #28a745; color: #ffffff; font-weight: bold;"
         return "color: #888888;"
 
-    styled_display_df = df_sorted.style.map(
+    styled_display_df = display_df.style.map(
         color_taiwan_col, subset=["降落台灣"]
     )
 
@@ -502,6 +537,9 @@ if not df_matched.empty:
         use_container_width=True,
         hide_index=True,
         column_config=matched_col_config,
+        key="flight_table",
+        on_select="rerun",
+        selection_mode="single-row",
     )
 
 # --- 2. 確定未在空中的飛機清單 ---
