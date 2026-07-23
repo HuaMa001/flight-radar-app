@@ -4,7 +4,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import requests
 from FlightRadarAPI import FlightRadar24API
 
-# 1. 讀取 GitHub Secrets 金鑰 (優先讀取 DISCORD_WEBHOOK_URL，若無則讀取 DISCORD)
+# 1. 讀取 GitHub Secrets 金鑰
 DISCORD_WEBHOOK_URL = os.getenv(
     "DISCORD_WEBHOOK_URL", os.getenv("DISCORD", "")
 )
@@ -13,24 +13,12 @@ DISCORD_WEBHOOK_URL = os.getenv(
 raw_targets = os.getenv("TARGET_PLANES", "")
 
 if raw_targets and raw_targets.strip():
-    # 自動支援「換行分隔」或「逗號分隔」的飛機清單
     TARGETS = [
         t.strip().upper()
         for t in raw_targets.replace("\n", ",").split(",")
         if t.strip()
     ]
     print(f"📋 成功從 GitHub Variables 載入 {len(TARGETS)} 架目標飛機！")
-else:
-    # 若變數未設定，啟用備用清單
-    print("ℹ️ 未偵測到 TARGET_PLANES 變數，自動啟用內建預設清單。")
-    TARGETS = [
-        "B-KQU", "B-LRJ", "B-LJE", "HL7628", "B-18918", "B-18311", "B-18007", "B-5390",
-        "JA872A", "B-17812", "B-16715", "JA880A", "JA731A", "JA875A", "JA614A", "9V-SWI",
-        "9V-SWJ", "B-2032", "B-6091", "B-6093", "HL7732", "HL8071", "HS-TKQ", "HL7783",
-        "VN-A897", "VN-A327", "B-6538", "PK-GMH", "PH-BVD", "9V-OJJ", "JA73AB", "JA894A",
-        "B-18101", "A6-EXR", "A6-EES", "A6-EET", "A6-EEP", "A6-DDE", "A6-BLV", "A6-BMH",
-        "LX-NCL", "LX-VCF", "HL7423", "HL7419", "JA12KZ", "N771CK", "N454PA", "N249BA"
-    ]
 
 fr_api = FlightRadar24API()
 
@@ -42,21 +30,16 @@ def check_is_taiwan(text_or_code: str) -> bool:
     s = str(text_or_code).upper().strip()
 
     tw_airport_codes = {
-        # IATA (3碼)
         "TPE", "TSA", "KHH", "RMQ", "TNN", "HUN", "TTT", "MZG", "KIN", "CYI", "PIF", "LZN", "CMJ",
-        # ICAO (4碼)
         "RCTP", "RCSS", "RCKH", "RCMQ", "RCNN", "RCHU", "RCFG", "RCBS", "RCFN", "RCKW", "RCMT", "RCLY"
     }
 
-    # 1. 精準比對代碼
     if s in tw_airport_codes:
         return True
 
-    # 2. 若為 4 碼 ICAO 代碼，且開頭必須是 RC (如 RCTP)
     if len(s) == 4 and s.startswith("RC"):
         return True
 
-    # 3. 城市/國家名稱關鍵字比對
     tw_name_keywords = ["TAIPEI", "TAIWAN", "KAOHSIUNG", "TAICHUNG", "TAINAN", "台北", "台灣", "高雄", "台中", "台南"]
     return any(kw in s for kw in tw_name_keywords)
 
@@ -116,10 +99,10 @@ def fetch_direct_clickhandler(flight_obj_or_id) -> dict | None:
 
 
 def search_single_target(target_raw: str, all_flights: list, flight_map_by_id: dict) -> dict | None:
-    """雙階段搜尋 Worker (階段 1: 廣播直連 / 階段 2: Web API 線上反查)"""
+    """雙階段搜尋 Worker (加入完整的防封鎖 Header 模擬)"""
     target_clean = target_raw.replace("-", "")
 
-    # 階段 1：直播廣播數據直接比對 (比對呼號、機號、航班號)
+    # 階段 1：直播廣播數據直接比對
     for flight in all_flights:
         f_num = (getattr(flight, "number", "") or "").upper()
         f_callsign = (getattr(flight, "callsign", "") or "").upper()
@@ -151,17 +134,17 @@ def search_single_target(target_raw: str, all_flights: list, flight_map_by_id: d
                     "is_taiwan": is_tw,
                 }
 
-    # 階段 2：若廣播數據未抓到，調用 Web API 進行線上反查
+    # 階段 2：若廣播數據未抓到，調用 Web API 進行線上反查 (加入擬真 Header)
     search_url = f"https://www.flightradar24.com/v1/search/web/find?query={target_raw}"
     headers = {
-        "User-Agent": (
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-            " (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-        )
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "zh-TW,zh;q=0.9,en-US;q=0.8,en;q=0.7",
+        "Referer": "https://www.flightradar24.com/",
     }
 
     try:
-        res = requests.get(search_url, headers=headers, timeout=4)
+        res = requests.get(search_url, headers=headers, timeout=5)
         if res.status_code == 200:
             results = sorted(
                 res.json().get("results", []),
@@ -220,7 +203,7 @@ def send_discord_webhook(taiwan_flights: list):
             "description": (
                 f"當前共有 **{len(taiwan_flights)}** 架目標班機預計或已降落台灣！"
             ),
-            "color": 15158332,  # 警報紅色
+            "color": 15158332,
             "fields": fields,
             "footer": {"text": "FlightRadar24 智慧航班監測系統"},
         }]
@@ -239,8 +222,8 @@ def send_discord_webhook(taiwan_flights: list):
 def main():
     print("🚀 開始執行多輪穩定度巡檢機制...")
 
-    matched_dict = {}  # 存放已查到的飛機數據
-    stable_threshold = 10  # 連續 10 輪未查到數量無變化時停止
+    matched_dict = {}
+    stable_threshold = 10
     last_unmatched_count = -1
     stable_counter = 0
     current_round = 0
@@ -250,19 +233,16 @@ def main():
         pending_targets = [t for t in TARGETS if t not in matched_dict]
         current_unmatched_count = len(pending_targets)
 
-        # 1. 若所有目標皆已找到，提前結束輪詢
         if current_unmatched_count == 0:
             print("🎉 所有監控目標皆已成功定位！")
             break
 
-        # 2. 統計未查到的數量是否維持穩定
         if current_unmatched_count == last_unmatched_count:
             stable_counter += 1
         else:
             stable_counter = 1
             last_unmatched_count = current_unmatched_count
 
-        # 3. 連續 10 輪穩定判定達成，結束輪詢
         if stable_counter >= stable_threshold:
             print(
                 f"\n✅ 穩定度達成！未查到數量已連續 {stable_threshold} 輪維持在 {current_unmatched_count} 架，結束輪詢。"
@@ -274,14 +254,13 @@ def main():
             f"（待查：{current_unmatched_count} 架 | 穩定進度：{stable_counter}/{stable_threshold}）"
         )
 
-        # 每輪獲取最新的全球空域快照
         snapshot = fr_api.get_flights() or []
         flight_map_by_id = {
             getattr(f, "id", ""): f for f in snapshot if getattr(f, "id", "")
         }
 
-        # 開啟 8 個線程併行掃描當輪未找到的目標
-        with ThreadPoolExecutor(max_workers=8) as executor:
+        # 降低線程數至 4，減緩 HTTP 請求頻率，大幅降低 GitHub Actions 被阻擋的機率
+        with ThreadPoolExecutor(max_workers=4) as executor:
             future_to_target = {
                 executor.submit(
                     search_single_target, target, snapshot, flight_map_by_id
@@ -295,6 +274,25 @@ def main():
                     res = future.result()
                     if res:
                         matched_dict[target] = res
+                except Exception:
+                    pass
+
+        time.sleep(1)
+
+    taiwan_flights = [f for f in matched_dict.values() if f["is_taiwan"]]
+
+    print(
+        f"\n📊 掃描總結：共在空中抓到 {len(matched_dict)} 架目標，"
+        f"其中 {len(taiwan_flights)} 架預計或已降落台灣。"
+    )
+
+    if taiwan_flights:
+        send_discord_webhook(taiwan_flights)
+
+
+if __name__ == "__main__":
+    main()
+matched_dict[target] = res
                 except Exception:
                     pass
 
