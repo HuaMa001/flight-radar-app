@@ -1,5 +1,4 @@
-from concurrent.futures import ThreadPoolExecutor, as_completed
-import random
+
 import time
 import pandas as pd
 import pydeck as pdk
@@ -23,8 +22,7 @@ def init_api():
 fr_api = init_api()
 
 
-# 全球廣播資料快取 30 秒
-@st.cache_data(ttl=30, show_spinner=False)
+@st.cache_data(ttl=60, show_spinner=False)
 def fetch_all_active_flights():
     try:
         flights = fr_api.get_flights()
@@ -137,11 +135,10 @@ def fetch_direct_clickhandler(flight_obj_or_id) -> dict | None:
         return None
 
 
-# ⚡ 對單一目標搜尋加入 3 分鐘 (180s) 的本地快取，避免重複對 FR24 發送 HTTP 請求
-@st.cache_data(ttl=180, show_spinner=False)
-def search_single_target_cached(target_raw: str) -> dict | None:
+
+@st.cache_data(ttl=60, show_spinner=False)
+def search_single_target_cached(target_raw: str, all_flights) -> dict | None:
     # 取得最新的廣播池
-    all_flights = fetch_all_active_flights()
     target_clean = target_raw.replace("-", "")
 
     flight_map_by_id = {
@@ -193,8 +190,7 @@ def search_single_target_cached(target_raw: str) -> dict | None:
                     "_is_taiwan": is_taiwan,
                 }
 
-    # ⚡ 步驟 2: Web API 反查 (隨機微延遲 0.3~0.6s，模仿真人，避免觸發 429)
-    time.sleep(random.uniform(0.3, 0.6))
+    time.sleep(0.5)
 
     search_url = (
         f"https://www.flightradar24.com/v1/search/web/find?query={target_raw}"
@@ -209,7 +205,13 @@ def search_single_target_cached(target_raw: str) -> dict | None:
     try:
         res = requests.get(search_url, headers=headers, timeout=5)
         if res.status_code == 200:
-            results = res.json().get("results", [])
+            results = sorted(
+                res.json().get("results", []),
+                key=lambda x: (
+                    x.get("type") != "live",
+                    str(x.get("id", "")),
+                ),
+            )
             for item in results:
                 if item.get("type") == "live":
                     live_id = str(item.get("id", "")).strip()
@@ -332,8 +334,11 @@ with st.sidebar:
     )
 
     # 增加手動強制清快取按鈕
-    if st.button("🧹 清除 API 快取並重查", use_container_width=True):
+    if st.button("🧹 清除 API 快取並重查"):
         st.cache_data.clear()
+
+        time.sleep(1)
+
         st.rerun()
 
 targets = [f.strip().upper() for f in flight_input.split("\n") if f.strip()]
@@ -348,6 +353,11 @@ if scan_button or "first_run" not in st.session_state:
 
     try:
         status_info.info("📡 正從 FlightRadar24 抓取全球即時空域廣播數據...")
+        snapshot = fetch_all_active_flights()
+
+        if not snapshot:
+            st.warning("無法取得 FlightRadar24 全球廣播資料")
+            st.stop()
         matched_results = []
 
         # ------------------ 第 1 輪全清單掃描 ------------------
@@ -355,17 +365,25 @@ if scan_button or "first_run" not in st.session_state:
 
         completed_1 = 0
         # 平行數降為 2，並搭配快取，徹底防範 FR24 Rate-Limit
-        with ThreadPoolExecutor(max_workers=2) as executor:
-            futures_1 = {
-                executor.submit(search_single_target_cached, t): t
-                for t in targets
-            }
-            for future in as_completed(futures_1):
-                res = future.result()
-                if res:
-                    matched_results.append(res)
-                completed_1 += 1
-                progress_bar.progress((completed_1 / len(targets)) * 0.5)
+        status_info.info(
+            f"🔄 [第1/2輪] 正逐筆掃描 {len(targets)} 個目標..."
+        )
+
+        completed_1 = 0
+
+        for target in targets:
+
+            res = search_single_target_cached(target, snapshot)
+
+            if res:
+                matched_results.append(res)
+
+            completed_1 += 1
+
+            progress_bar.progress(
+                completed_1 / len(targets) * 0.5
+            )
+
 
         # 找出第 1 輪未命中的目標
         found_targets_1 = {r["監控目標"] for r in matched_results}
@@ -380,25 +398,45 @@ if scan_button or "first_run" not in st.session_state:
             time.sleep(1.0)
             completed_2 = 0
 
-            with ThreadPoolExecutor(max_workers=2) as executor:
-                futures_2 = {
-                    executor.submit(search_single_target_cached, t): t
-                    for t in unmatched_targets_1
-                }
-                for future in as_completed(futures_2):
-                    res = future.result()
-                    if res:
-                        matched_results.append(res)
-                    completed_2 += 1
-                    progress_bar.progress(
-                        0.5 + (completed_2 / len(unmatched_targets_1)) * 0.5
-                    )
+            completed_2 = 0
+
+            for target in unmatched_targets_1:
+
+                res = search_single_target_cached(target, snapshot)
+
+                if res:
+                    matched_results.append(res)
+
+                completed_2 += 1
+
+                progress_bar.progress(
+                    0.5 + completed_2 / len(unmatched_targets_1) * 0.5
+                )
 
         progress_bar.progress(1.0)
         progress_bar.empty()
         status_info.empty()
 
-        st.session_state["final_df"] = pd.DataFrame(matched_results)
+        df = pd.DataFrame(matched_results)
+
+        if not df.empty:
+            df = (
+                df.sort_values(
+                    by=[
+                        "_is_taiwan",
+                        "監控目標",
+                        "航班號",
+                    ],
+                    ascending=[False, True, True],
+                )
+                .drop_duplicates(
+                    subset=["監控目標"],
+                    keep="first",
+                )
+                .reset_index(drop=True)
+            )
+
+        st.session_state["final_df"] = df
 
     except Exception as e:
         st.error(f"執行監測時發生錯誤: {str(e)}")
