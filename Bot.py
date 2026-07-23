@@ -142,7 +142,7 @@ def main():
 
     if taiwan_flights:
         send_discord_webhook(taiwan_flights)
-
+    send_notification("🧪 【系統測試】這是來自 GitHub Actions 的測試推播，連線完全正常！")
 
 if __name__ == "__main__":
     main()
