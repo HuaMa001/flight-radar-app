@@ -56,21 +56,36 @@ def check_is_taiwan(text_or_code: str) -> bool:
         "RCTP", "RCSS", "RCKH", "RCMQ", "RCNN", "RCHU", "RCFG", "RCBS", "RCFN", "RCKW", "RCMT", "RCLY"
     }
 
-    # 1. 精準比對代碼
     if s in tw_airport_codes:
         return True
 
-    # 2. 若為 4 碼 ICAO 代碼，且開頭必須是 RC (例如 RCTP)
     if len(s) == 4 and s.startswith("RC"):
         return True
 
-    # 3. 城市與國家名稱關鍵字比對
     tw_name_keywords = ["TAIPEI", "TAIWAN", "KAOHSIUNG", "TAICHUNG", "TAINAN", "台北", "台灣", "高雄", "台中", "台南"]
     return any(kw in s for kw in tw_name_keywords)
 
 
+def fetch_planespotters_image(registration: str) -> str | None:
+    """【備用方案】從 Planespotters.net 免費 API 依據機身註冊號搜尋照片"""
+    if not registration or registration == "未知":
+        return None
+    try:
+        url = f"https://api.planespotters.net/pub/photos/reg/{registration}"
+        res = http_session.get(url, timeout=5)
+        if res.status_code == 200:
+            data = res.json()
+            photos = data.get("photos", [])
+            if photos:
+                # 優先拿大圖，沒有就拿縮圖
+                return photos[0].get("thumbnail_large", {}).get("src") or photos[0].get("thumbnail", {}).get("src")
+    except Exception:
+        pass
+    return None
+
+
 def fetch_direct_clickhandler(flight_obj_or_id) -> dict | None:
-    """向 API 索取詳細飛行狀態與起降機場資訊"""
+    """向 API 索取詳細飛行狀態與起降機場資訊，並自動擷取飛機圖片"""
     try:
         if hasattr(flight_obj_or_id, "id"):
             details = fr_api.get_flight_details(flight_obj_or_id)
@@ -113,11 +128,25 @@ def fetch_direct_clickhandler(flight_obj_or_id) -> dict | None:
         ac = details.get("aircraft") or {}
         f_reg = ac.get("registration") or "未知"
 
+        # --- 🖼️ 抓取飛機照片邏輯 ---
+        image_url = None
+        images = ac.get("images") or {}
+        large_images = images.get("large") or images.get("medium") or []
+        
+        # 1. 優先嘗試從 FR24 內建的 JetPhotos 獲取大圖
+        if large_images and isinstance(large_images, list) and len(large_images) > 0:
+            image_url = large_images[0].get("src")
+
+        # 2. 若 FR24 沒有照片，向 Planespotters.net 免費 API 反查
+        if not image_url and f_reg != "未知":
+            image_url = fetch_planespotters_image(f_reg)
+
         return {
             "origin": origin,
             "destination": destination,
             "f_num": f_num,
             "f_reg": f_reg,
+            "image_url": image_url,  # 回傳圖片網址
         }
     except Exception:
         return None
@@ -157,9 +186,10 @@ def search_single_target(target_raw: str, all_flights: list, flight_map_by_id: d
                     ),
                     "route": f"{details['origin']} ➔ {dest}",
                     "is_taiwan": is_tw,
+                    "image_url": details.get("image_url"),
                 }
 
-    # 階段 2：若廣播數據未抓到，調用 Web API 進行線上反查 (使用擬真 Session)
+    # 階段 2：線上反查
     search_url = f"https://www.flightradar24.com/v1/search/web/find?query={target_raw}"
 
     try:
@@ -195,6 +225,7 @@ def search_single_target(target_raw: str, all_flights: list, flight_map_by_id: d
                                 ),
                                 "route": f"{details['origin']} ➔ {dest}",
                                 "is_taiwan": is_tw,
+                                "image_url": details.get("image_url"),
                             }
     except Exception:
         pass
@@ -203,35 +234,37 @@ def search_single_target(target_raw: str, all_flights: list, flight_map_by_id: d
 
 
 def send_discord_webhook(taiwan_flights: list):
-    """專用 Discord 美化 Embed 警報推播函式"""
+    """專用 Discord 美化 Embed 警報推播函式 (支援大圖預覽)"""
     if not DISCORD_WEBHOOK_URL:
         print("⚠️ 未偵測到 DISCORD 金鑰設定，跳過推播發送。")
         return
 
-    fields = []
+    embeds = []
+    
+    # 為每一架符合條件的班機建立獨立的 Embed 卡片，這樣每架飛機都能顯示各自的照片
     for f in taiwan_flights:
-        fields.append({
-            "name": f"✈️ 航班：{f['f_num']} (機身號: {f['f_reg']})",
-            "value": f"📍 **航線：** {f['route']}",
-            "inline": False,
-        })
-
-    payload = {
-        "embeds": [{
-            "title": "🚨 FlightRadar24 彩繪機降落台灣警報",
-            "description": (
-                f"當前共有 **{len(taiwan_flights)}** 架目標班機預計或已降落台灣！"
-            ),
+        embed = {
+            "title": f"🚨 彩繪機降落警報：{f['f_num']}",
             "color": 15158332,
-            "fields": fields,
+            "fields": [
+                {"name": "機身註冊號", "value": f"`{f['f_reg']}`", "inline": True},
+                {"name": "航線狀況", "value": f"📍 **{f['route']}**", "inline": True},
+            ],
             "footer": {"text": "FlightRadar24 智慧航班監測系統"},
-        }]
-    }
+        }
+
+        # 如果有找到圖片，嵌入到 Embed 中
+        if f.get("image_url"):
+            embed["image"] = {"url": f["image_url"]}
+
+        embeds.append(embed)
+
+    payload = {"embeds": embeds}
 
     try:
         res = http_session.post(DISCORD_WEBHOOK_URL, json=payload, timeout=5)
         if res.status_code in [200, 204]:
-            print("✅ 成功發送 Discord Webhook 通知！")
+            print("✅ 成功發送 Discord Webhook 通知與圖片！")
         else:
             print(f"❌ Discord 發送失敗，HTTP 狀態碼: {res.status_code}")
     except Exception as e:
@@ -256,19 +289,16 @@ def main():
         pending_targets = [t for t in TARGETS if t not in matched_dict]
         current_unmatched_count = len(pending_targets)
 
-        # 1. 若所有目標皆已找到，提前結束輪詢
         if current_unmatched_count == 0:
             print("🎉 所有監控目標皆已成功定位！")
             break
 
-        # 2. 統計未查到的數量是否維持穩定
         if current_unmatched_count == last_unmatched_count:
             stable_counter += 1
         else:
             stable_counter = 1
             last_unmatched_count = current_unmatched_count
 
-        # 3. 連續 10 輪穩定判定達成，結束輪詢
         if stable_counter >= stable_threshold:
             print(
                 f"\n✅ 穩定度達成！未查到數量已連續 {stable_threshold} 輪維持在 {current_unmatched_count} 架，結束輪詢。"
@@ -285,7 +315,6 @@ def main():
             getattr(f, "id", ""): f for f in snapshot if getattr(f, "id", "")
         }
 
-        # 開啟 3 個線程，避免發起太過猛烈的請求
         with ThreadPoolExecutor(max_workers=3) as executor:
             future_to_target = {
                 executor.submit(
