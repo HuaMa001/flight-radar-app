@@ -65,16 +65,14 @@ def format_full_datetime(ts: int | None) -> str:
 
 
 def check_is_taiwan(text_or_code: str) -> bool:
-    """精準判斷機場代碼或名稱是否屬於台灣 (已修復 URC 烏魯木齊誤報 Bug)"""
+    """精準判斷機場代碼或名稱是否屬於台灣"""
     if not text_or_code or text_or_code == "未知":
         return False
     s = str(text_or_code).upper().strip()
 
     tw_airport_codes = {
-        # IATA (3碼)
         "TPE", "TSA", "KHH", "RMQ", "TNN", "HUN", "TTT", "MZG", "KIN", "CYI", "PIF", "LZN", "CMJ",
-        # ICAO (4碼)
-        "RCTP", "RCSS", "RCKH", "RCMQ", "RCNN", "RCHU", "RCFG", "RCBS", "RCFN", "RCKW", "RCMT", "RCLY",
+        "RCTP", "RCSS", "RCKH", "RCMQ", "RCNN", "RCHU", "RCFG", "RCBS", "RCFN", "RCKW", "RCMT", "RCLY"
     }
 
     if s in tw_airport_codes:
@@ -85,13 +83,13 @@ def check_is_taiwan(text_or_code: str) -> bool:
 
     tw_name_keywords = [
         "TAIPEI", "TAIWAN", "KAOHSIUNG", "TAICHUNG", "TAINAN",
-        "台北", "台灣", "高雄", "台中", "台南",
+        "台北", "台灣", "高雄", "台中", "台南"
     ]
     return any(kw in s for kw in tw_name_keywords)
 
 
 def fetch_planespotters_image(registration: str) -> str | None:
-    """【備用方案】從 Planespotters.net 免費 API 依據機身註冊號獲取照片"""
+    """從 Planespotters.net 免費 API 依據機身註冊號獲取照片"""
     if not registration or registration == "未知":
         return None
     try:
@@ -111,7 +109,7 @@ def fetch_planespotters_image(registration: str) -> str | None:
 
 
 def fetch_direct_clickhandler(flight_obj_or_id) -> dict | None:
-    """向 API 索取詳細飛行狀態、起降機場資訊、抵達時間與飛機圖片"""
+    """索取詳細飛行狀態、起降機場資訊、抵達時間與飛機圖片"""
     try:
         if hasattr(flight_obj_or_id, "id"):
             details = fr_api.get_flight_details(flight_obj_or_id)
@@ -173,7 +171,7 @@ def fetch_direct_clickhandler(flight_obj_or_id) -> dict | None:
         f_reg = ac.get("registration") or "未知"
         ac_code = (ac.get("model") or {}).get("code") or "未知"
 
-        # ⏰ 抓取抵達時間邏輯
+        # 抓取抵達時間
         time_data = details.get("time") or {}
         sta_ts = (time_data.get("scheduled") or {}).get("arrival")
         eta_ts = (time_data.get("estimated") or {}).get("arrival")
@@ -181,7 +179,7 @@ def fetch_direct_clickhandler(flight_obj_or_id) -> dict | None:
 
         eta_full = format_full_datetime(eta_ts or ata_ts or sta_ts)
 
-        # 🖼️ 照片抓取邏輯
+        # 照片抓取邏輯
         image_url = None
         images = ac.get("images") or {}
         large_images = images.get("large") or images.get("medium") or []
@@ -210,14 +208,14 @@ def fetch_direct_clickhandler(flight_obj_or_id) -> dict | None:
 
 
 def search_single_target_worker(target_raw: str, all_flights: list) -> dict | None:
-    """支援 worker 的單目標查詢函式"""
+    """單目標查詢 Worker"""
     target_clean = target_raw.replace("-", "")
 
     flight_map_by_id = {
         getattr(f, "id", ""): f for f in all_flights if getattr(f, "id", "")
     }
 
-    # 1. 廣播數據直接比對
+    # 1. 廣播數據比對
     for flight in all_flights:
         f_num = (getattr(flight, "number", "") or "").upper()
         f_callsign = (getattr(flight, "callsign", "") or "").upper()
@@ -243,16 +241,8 @@ def search_single_target_worker(target_raw: str, all_flights: list) -> dict | No
                 return {
                     "監控目標": target_raw,
                     "機身照片": details["image_url"],
-                    "航班號": (
-                        details["f_num"]
-                        if details["f_num"] != "未知"
-                        else (f_num or f_callsign)
-                    ),
-                    "機身註冊號": (
-                        details["f_reg"]
-                        if details["f_reg"] != "未知"
-                        else (f_reg or target_raw)
-                    ),
+                    "航班號": details["f_num"] if details["f_num"] != "未知" else (f_num or f_callsign),
+                    "機身註冊號": details["f_reg"] if details["f_reg"] != "未知" else (f_reg or target_raw),
                     "機型": details["ac_code"],
                     "航線 (出發➔到達)": f"{origin} ➔ {destination}",
                     "預計抵達 (TW)": details["eta_time"],
@@ -273,10 +263,7 @@ def search_single_target_worker(target_raw: str, all_flights: list) -> dict | No
         if res.status_code == 200:
             results = sorted(
                 res.json().get("results", []),
-                key=lambda x: (
-                    x.get("type") != "live",
-                    str(x.get("id", "")),
-                ),
+                key=lambda x: (x.get("type") != "live", str(x.get("id", ""))),
             )
             for item in results:
                 if item.get("type") == "live":
@@ -293,16 +280,8 @@ def search_single_target_worker(target_raw: str, all_flights: list) -> dict | No
                             return {
                                 "監控目標": target_raw,
                                 "機身照片": details["image_url"],
-                                "航班號": (
-                                    details["f_num"]
-                                    if details["f_num"] != "未知"
-                                    else target_raw
-                                ),
-                                "機身註冊號": (
-                                    details["f_reg"]
-                                    if details["f_reg"] != "未知"
-                                    else target_raw
-                                ),
+                                "航班號": details["f_num"] if details["f_num"] != "未知" else target_raw,
+                                "機身註冊號": details["f_reg"] if details["f_reg"] != "未知" else target_raw,
                                 "機型": details["ac_code"],
                                 "航線 (出發➔到達)": f"{origin} ➔ {destination}",
                                 "預計抵達 (TW)": details["eta_time"],
@@ -333,7 +312,7 @@ DEFAULT_TARGETS = [
     "HL8071", "HS-TKQ", "HL7783", "VN-A897", "VN-A327", "B-6538", "PK-GMH",
     "PH-BVD", "9V-OJJ", "JA73AB", "JA894A", "B-18101", "A6-EXR", "A6-EES",
     "A6-EET", "A6-EEP", "A6-DDE", "A6-BLV", "A6-BMH", "LX-NCL", "LX-VCF",
-    "HL7423", "HL7419", "JA12KZ", "N771CK", "N454PA", "N249BA",
+    "HL7423", "HL7419", "JA12KZ", "N771CK", "N454PA", "N249BA"
 ]
 
 default_text_value = "\n".join(DEFAULT_TARGETS)
@@ -368,7 +347,7 @@ with st.sidebar:
     )
 
 
-# 多執行緒併行 + 動態刷新數據邏輯
+# 多執行緒輪詢邏輯
 def run_scan_process_until_stable(
     all_targets: list[str],
     is_full_rescan: bool = False,
@@ -446,7 +425,7 @@ def run_scan_process_until_stable(
     status_info.empty()
 
 
-# 觸發邏輯處理
+# 觸發邏輯
 if "has_run_once" not in st.session_state:
     st.session_state["has_run_once"] = True
     run_scan_process_until_stable(targets, is_full_rescan=True)
@@ -488,9 +467,7 @@ col3.metric("🇹🇼 預計/已降落台灣", f"{taiwan_count} 架")
 col4.metric("未查到 / 尚未起飛", f"{len(unmatched_targets)} 架")
 
 if taiwan_count > 0:
-    st.success(
-        f"### 🇹🇼 即時警報：共有 **{taiwan_count}** 架目標班機預計或已經降落台灣！"
-    )
+    st.success(f"### 🇹🇼 即時警報：共有 **{taiwan_count}** 架目標班機預計或已經降落台灣！")
 
 st.divider()
 
@@ -508,7 +485,6 @@ if not df_matched.empty:
     zoom_level = 2.2
     selected_row = None
 
-    # 點擊表格的互動鎖定
     if (
         "flight_table" in st.session_state
         and st.session_state["flight_table"].get("selection", {}).get("rows")
@@ -524,7 +500,6 @@ if not df_matched.empty:
 
     st.subheader("🗺️ 飛機即時位置雷達地圖")
 
-    # 點擊航班時顯示詳細資訊與照片大圖
     if selected_row is not None:
         st.info(f"🎯 **已定位至航班：{selected_row['航班號']} ({selected_row['機身註冊號']})**")
 
@@ -566,16 +541,12 @@ if not df_matched.empty:
 
     hover_tooltip = {
         "html": (
-            '<div style="font-family: Arial, sans-serif; padding: 6px 10px; line-height: 1.5;">'
-            '<span style="font-size: 14px; font-weight: bold; color: #ff4b4b;">✈️ {航班號}</span> '
-            '<span style="font-size: 12px; color: #aaa;">({機身註冊號})</span><br/>'
-            '<b>📍 航線:</b> {航線 (出發➔到達)}<br/>'
-            '<b>🕒 預計抵達:</b> {預計抵達 (TW)}<br/>'
-            '<b>🛩️ 機型:</b> {機型}<br/>'
-            '<b>📏 高度:</b> {高度 (ft)} ft | <b>⚡ 地速:</b> {地速 (kts)} kts<br/>'
-            '<b>🇹🇼 降落台灣:</b> {降落台灣}<br/>'
-            '<span style="font-size: 10px; color: #888;">來源: {資料來源}</span>'
-            '</div>'
+            "<b>✈️ {航班號}</b> ({機身註冊號})<br/>"
+            "<b>📍 航線:</b> {航線 (出發➔到達)}<br/>"
+            "<b>🕒 預計抵達:</b> {預計抵達 (TW)}<br/>"
+            "<b>🛩️ 機型:</b> {機型}<br/>"
+            "<b>📏 高度:</b> {高度 (ft)} ft | <b>⚡ 地速:</b> {地速 (kts)} kts<br/>"
+            "<b>🇹🇼 降落台灣:</b> {降落台灣}"
         ),
         "style": {
             "backgroundColor": "rgba(15, 23, 42, 0.90)",
@@ -614,5 +585,37 @@ if not df_matched.empty:
 
     matched_col_config = {
         "編號": st.column_config.NumberColumn("編號", width=50, format="%d"),
-        "機身照片": st.column_config.ImageColumn("機身照片", width=90, help="點選該列可在上方鎖定地圖與放大照片"),
-        "降落台灣": st.column_config.TextColumn("降落台灣"
+        "機身照片": st.column_config.ImageColumn("機身照片", width=90),
+        "降落台灣": st.column_config.TextColumn("降落台灣", width=120),
+        "監控目標": st.column_config.TextColumn("監控目標", width=100),
+        "航班號": st.column_config.TextColumn("航班號", width=100),
+        "機身註冊號": st.column_config.TextColumn("機身註冊號", width=110),
+        "預計抵達 (TW)": st.column_config.TextColumn("預計抵達 (TW)", width=150),
+        "機型": st.column_config.TextColumn("機型", width=90),
+        "航線 (出發➔到達)": st.column_config.TextColumn("航線 (出發➔到達)", width=220),
+        "資料來源": st.column_config.TextColumn("資料來源", width=150),
+    }
+
+    def color_taiwan_col(val):
+        if "🇹🇼" in str(val):
+            return "background-color: #28a745; color: #ffffff; font-weight: bold;"
+        return "color: #888888;"
+
+    styled_display_df = display_df.style.map(
+        color_taiwan_col, subset=["降落台灣"]
+    )
+
+    st.dataframe(
+        styled_display_df,
+        use_container_width=True,
+        hide_index=True,
+        column_config=matched_col_config,
+        key="flight_table",
+        on_select="rerun",
+        selection_mode="single-row",
+    )
+
+st.divider()
+
+# --- 2. 確定未在空中的飛機清單（常駐顯示） ---
+st
