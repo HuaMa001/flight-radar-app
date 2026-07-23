@@ -4,6 +4,7 @@ import pydeck as pdk
 import requests
 import streamlit as st
 from FlightRadarAPI import FlightRadar24API
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # --- 1. 頁面基本設定與初始化 ---
 st.set_page_config(
@@ -344,16 +345,14 @@ with st.sidebar:
     )
 
 
-# 🔄 自動持續輪詢至數字穩定的掃描邏輯（調高 max_rounds 至 10，預設連續 4 次穩定）
+# 🔄 使用「多執行緒併發」+「持續輪詢至穩定」的掃描邏輯
 def run_scan_process_until_stable(
     all_targets: list[str],
     is_full_rescan: bool = False,
     max_rounds: int = 10,
     stable_threshold: int = 4,
+    max_workers: int = 8,  # 設定同時併行查詢的線程數 (建議 5~10)
 ):
-    """
-    持續反覆查詢未查到的目標，直到「未查到數量」連續 4 次沒有變化，或達到 max_rounds 止。
-    """
     if is_full_rescan:
         st.session_state["matched_dict"] = {}
 
@@ -375,24 +374,22 @@ def run_scan_process_until_stable(
     stable_counter = 0
 
     for current_round in range(1, max_rounds + 1):
-        # 找出當前尚未比對成功的目標
         matched_keys = set(st.session_state["matched_dict"].keys())
         pending_targets = [t for t in all_targets if t not in matched_keys]
         current_unmatched_count = len(pending_targets)
 
-        # 條件 1：如果全部目標都查到了，直接結束
+        # 1. 全部找到則提前終止
         if current_unmatched_count == 0:
             status_info.success("🎉 所有監控目標皆已成功定位！")
             break
 
-        # 條件 2：檢查未查到的數量是否與上一輪相同
+        # 2. 判斷數字穩定度
         if current_unmatched_count == last_unmatched_count:
             stable_counter += 1
         else:
             stable_counter = 1
             last_unmatched_count = current_unmatched_count
 
-        # 連續 4 次數量沒變即判定為穩定
         if stable_counter >= stable_threshold:
             status_info.success(
                 f"✅ 未查到數量已連續 {stable_threshold} 輪維持在 {current_unmatched_count} 架，數據已達穩定狀態！"
@@ -401,20 +398,38 @@ def run_scan_process_until_stable(
             break
 
         status_info.info(
-            f"🔄 第 {current_round}/{max_rounds} 輪掃描中... "
+            f"⚡ [併行加速中] 第 {current_round}/{max_rounds} 輪掃描... "
             f"（剩餘未查到：{current_unmatched_count} 架 | 穩定進度：{stable_counter}/{stable_threshold}）"
         )
 
         total_pending = len(pending_targets)
-        for i, target in enumerate(pending_targets):
-            res = search_single_target_cached(target, snapshot)
-            if res:
-                st.session_state["matched_dict"][target] = res
+        completed_count = 0
 
-            progress_bar.progress((i + 1) / total_pending)
+        # 🚀 關鍵修改：使用 ThreadPoolExecutor 同時查詢多個目標
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            # 建立任務對應 dict
+            future_to_target = {
+                executor.submit(
+                    search_single_target_cached, target, snapshot
+                ): target
+                for target in pending_targets
+            }
 
-        # 輪詢微小間隔，維持 API 請求品質
-        time.sleep(0.5)
+            # 只要有任何一個線程完成，就即時更新進度條與紀錄結果
+            for future in as_completed(future_to_target):
+                target = future_to_target[future]
+                try:
+                    res = future.result()
+                    if res:
+                        st.session_state["matched_dict"][target] = res
+                except Exception:
+                    pass
+
+                completed_count += 1
+                progress_bar.progress(completed_count / total_pending)
+
+        # 每輪掃描之間稍微停頓 0.3 秒即可
+        time.sleep(0.3)
 
     progress_bar.empty()
     status_info.empty()
