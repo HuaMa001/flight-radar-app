@@ -3,8 +3,8 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import requests
 from FlightRadarAPI import FlightRadar24API
 
-# 👈 1. 已改為讀取名為 DISCORD 的 Secret
-DISCORD_WEBHOOK_URL = os.getenv("DISCORD", "")
+# 👈 讀取名稱為 DISCORD 的 GitHub Secret
+DISCORD_WEBHOOK_URL = os.getenv("DISCORD", os.getenv("DISCORD_WEBHOOK_URL", ""))
 
 # 監控目標清單 (機身號 / 註冊號)
 TARGETS = [
@@ -143,7 +143,7 @@ def main():
     if taiwan_flights:
         send_discord_webhook(taiwan_flights)
 
-    # 👈 2. 測試用強制發送通知（測試成功後可將下面兩行刪除）
+    # 測試用強制發送通知（頻道收到測試訊息後，可將下面兩行刪除）
     test_data = [{"f_num": "TEST888", "f_reg": "B-TEST", "route": "TPE ➔ KHH (連線測試成功)"}]
     send_discord_webhook(test_data)
 
