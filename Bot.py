@@ -42,7 +42,6 @@ def load_targets(filepath: str = "targets.txt") -> list[str]:
             ]
             print(f"📋 成功從環境變數載入 {len(targets)} 架目標飛機！")
 
-    # 去重並保持順序
     return list(dict.fromkeys(targets))
 
 
@@ -69,7 +68,6 @@ def get_headers():
 
 # --- 2. 輔助與 API 查詢函式 ---
 def format_full_datetime(ts: int | None) -> str:
-    """Unix Timestamp 轉 UTC+8 字串 (YYYY-MM-DD HH:MM)"""
     if not ts:
         return "未知"
     try:
@@ -81,7 +79,6 @@ def format_full_datetime(ts: int | None) -> str:
 
 
 def check_is_taiwan(text_or_code: str) -> bool:
-    """精準判斷機場代碼或名稱是否屬於台灣"""
     if not text_or_code or text_or_code == "未知":
         return False
     s = str(text_or_code).upper().strip()
@@ -102,7 +99,6 @@ def check_is_taiwan(text_or_code: str) -> bool:
 
 
 def fetch_planespotters_image(registration: str) -> str | None:
-    """備用圖片 API"""
     if not registration or registration == "未知":
         return None
     try:
@@ -118,7 +114,6 @@ def fetch_planespotters_image(registration: str) -> str | None:
 
 
 def fetch_direct_clickhandler(fr_api_inst, flight_obj_or_id) -> dict | None:
-    """向 FR24 取得單一航班詳細資訊"""
     try:
         if hasattr(flight_obj_or_id, "id"):
             details = fr_api_inst.get_flight_details(flight_obj_or_id)
@@ -193,7 +188,7 @@ def fetch_direct_clickhandler(fr_api_inst, flight_obj_or_id) -> dict | None:
 
 
 def search_single_target(target_raw: str, all_flights: list, flight_map_by_id: dict, fr_api_inst) -> dict | None:
-    """雙階段搜尋 Worker (單線程版)"""
+    """雙階段單目標搜尋 Worker"""
     target_clean = target_raw.replace("-", "")
 
     # 階段 1：直播廣播數據記憶體快速比對
@@ -225,8 +220,8 @@ def search_single_target(target_raw: str, all_flights: list, flight_map_by_id: d
                     "source": "📡 直播廣播",
                 }
 
-    # 階段 2： Web API 反查（加入 0.4 秒間隔防 Rate Limit）
-    time.sleep(0.4)
+    # 階段 2：Web API 反查（加入 0.3 秒間隔避免觸發 Rate Limit）
+    time.sleep(0.3)
     search_url = f"https://www.flightradar24.com/v1/search/web/find?query={target_raw}"
 
     try:
@@ -305,32 +300,66 @@ def main():
         print("🛑 沒有偵測到任何監控目標，程式結束。")
         return
 
-    print(f"🚀 開始監控 {len(TARGETS)} 架目標航班...")
+    print(f"🚀 開始監控 {len(TARGETS)} 架目標航班（單線程 + 10 輪穩定度驗證）...")
 
     fr_api_inst = FlightRadar24API()
-
-    # 1. 一次性獲取全球廣播快照
-    try:
-        snapshot = fr_api_inst.get_flights() or []
-    except Exception:
-        snapshot = []
-
-    print(f"📡 成功獲取全球廣播快照，包含 {len(snapshot)} 架即時航班資訊。")
-
-    flight_map_by_id = {
-        getattr(f, "id", ""): f for f in snapshot if getattr(f, "id", "")
-    }
-
     matched_dict = {}
 
-    # 2. 單線程依序查詢，確保絕不觸發 Cloudflare 風控
-    for idx, target in enumerate(TARGETS, start=1):
-        res = search_single_target(target, snapshot, flight_map_by_id, fr_api_inst)
-        if res:
-            matched_dict[target] = res
-            print(f"  [{idx:02d}/{len(TARGETS)}] 🟢 抓到目標 {target} -> {res['f_num']} ({res['route']})")
+    stable_threshold = 10
+    last_unmatched_count = -1
+    stable_counter = 0
+    current_round = 0
+
+    while True:
+        current_round += 1
+        pending_targets = [t for t in TARGETS if t not in matched_dict]
+        current_unmatched_count = len(pending_targets)
+
+        if current_unmatched_count == 0:
+            print("\n🎉 所有目標皆已在空中順利定位！")
+            break
+
+        if current_unmatched_count == last_unmatched_count:
+            stable_counter += 1
         else:
-            print(f"  [{idx:02d}/{len(TARGETS)}] 🔴 未在空中：{target}")
+            stable_counter = 1
+            last_unmatched_count = current_unmatched_count
+
+        if stable_counter >= stable_threshold:
+            print(
+                f"\n✅ 數據已穩定！未查到數量連續 {stable_threshold} 輪維持在 "
+                f"{current_unmatched_count} 架，結束輪詢。"
+            )
+            break
+
+        print(
+            f"\n⚡ 第 {current_round:02d} 輪掃描... "
+            f"（待查未飛：{current_unmatched_count} 架 | 穩定進度：{stable_counter}/{stable_threshold}）"
+        )
+
+        # 獲取本輪最新全球廣播快照
+        try:
+            snapshot = fr_api_inst.get_flights() or []
+        except Exception:
+            snapshot = []
+
+        flight_map_by_id = {
+            getattr(f, "id", ""): f for f in snapshot if getattr(f, "id", "")
+        }
+
+        # 單線程順序查詢剩餘待查目標
+        for target in pending_targets:
+            res = search_single_target(
+                target, snapshot, flight_map_by_id, fr_api_inst
+            )
+            if res:
+                matched_dict[target] = res
+                print(
+                    f"  └─ 🟢 [第 {current_round:02d} 輪] 抓到目標：{target} "
+                    f"-> {res['f_num']} ({res['route']})"
+                )
+
+        time.sleep(1)
 
     taiwan_flights = [f for f in matched_dict.values() if f["is_taiwan"]]
 
