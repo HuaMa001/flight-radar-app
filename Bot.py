@@ -1,11 +1,12 @@
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta, timezone
 import os
+import random
 import time
 import requests
 from FlightRadarAPI import FlightRadar24API
 
-# --- 1. 環境變數與 API 初始化 ---
+# --- 1. 環境變數與初始化 ---
 DISCORD_WEBHOOK_URL = os.getenv(
     "DISCORD_WEBHOOK_URL", os.getenv("DISCORD", "")
 )
@@ -30,19 +31,25 @@ else:
     TARGETS = []
 
 http_session = requests.Session()
-http_session.headers.update({
-    "User-Agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/124.0.0.0 Safari/537.36"
-    ),
-    "Accept": "application/json, text/plain, */*",
-    "Accept-Language": "zh-TW,zh;q=0.9,en-US;q=0.8,en;q=0.7",
-    "Referer": "https://www.flightradar24.com/",
-})
 
 
-# --- 2. 輔助與 API 查詢函式 ---
+# 產生動態隨機 Header 避開 Cloudflare 偵測
+def get_random_headers():
+    user_agents = [
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:125.0) Gecko/20100101 Firefox/125.0",
+    ]
+    return {
+        "User-Agent": random.choice(user_agents),
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "zh-TW,zh;q=0.9,en-US;q=0.8,en;q=0.7",
+        "Referer": "https://www.flightradar24.com/",
+        "Origin": "https://www.flightradar24.com",
+    }
+
+
+# --- 2. 核心判斷邏輯 ---
 def format_full_datetime(ts: int | None) -> str:
     if not ts:
         return "未知"
@@ -60,16 +67,47 @@ def check_is_taiwan(text_or_code: str) -> bool:
     s = str(text_or_code).upper().strip()
 
     tw_airport_codes = {
-        "TPE", "TSA", "KHH", "RMQ", "TNN", "HUN", "TTT", "MZG", "KIN", "CYI", "PIF", "LZN", "CMJ",
-        "RCTP", "RCSS", "RCKH", "RCMQ", "RCNN", "RCHU", "RCFG", "RCBS", "RCFN", "RCKW", "RCMT", "RCLY"
+        "TPE",
+        "TSA",
+        "KHH",
+        "RMQ",
+        "TNN",
+        "HUN",
+        "TTT",
+        "MZG",
+        "KIN",
+        "CYI",
+        "PIF",
+        "LZN",
+        "CMJ",
+        "RCTP",
+        "RCSS",
+        "RCKH",
+        "RCMQ",
+        "RCNN",
+        "RCHU",
+        "RCFG",
+        "RCBS",
+        "RCFN",
+        "RCKW",
+        "RCMT",
+        "RCLY",
     }
 
     if s in tw_airport_codes or (len(s) == 4 and s.startswith("RC")):
         return True
 
     tw_name_keywords = [
-        "TAIPEI", "TAIWAN", "KAOHSIUNG", "TAICHUNG", "TAINAN",
-        "台北", "台灣", "高雄", "台中", "台南"
+        "TAIPEI",
+        "TAIWAN",
+        "KAOHSIUNG",
+        "TAICHUNG",
+        "TAINAN",
+        "台北",
+        "台灣",
+        "高雄",
+        "台中",
+        "台南",
     ]
     return any(kw in s for kw in tw_name_keywords)
 
@@ -79,14 +117,15 @@ def fetch_planespotters_image(registration: str) -> str | None:
         return None
     try:
         url = f"https://api.planespotters.net/pub/photos/reg/{registration}"
-        res = http_session.get(url, timeout=4)
+        res = http_session.get(
+            url, headers=get_random_headers(), timeout=4
+        )
         if res.status_code == 200:
             photos = res.json().get("photos", [])
             if photos:
-                return (
-                    photos[0].get("thumbnail_large", {}).get("src")
-                    or photos[0].get("thumbnail", {}).get("src")
-                )
+                return photos[0].get("thumbnail_large", {}).get(
+                    "src"
+                ) or photos[0].get("thumbnail", {}).get("src")
     except Exception:
         pass
     return None
@@ -97,10 +136,15 @@ def fetch_direct_clickhandler(fr_api_inst, flight_obj_or_id) -> dict | None:
         if hasattr(flight_obj_or_id, "id"):
             details = fr_api_inst.get_flight_details(flight_obj_or_id)
         else:
+
             class DummyFlight:
+
                 def __init__(self, fid):
                     self.id = fid
-            details = fr_api_inst.get_flight_details(DummyFlight(flight_obj_or_id))
+
+            details = fr_api_inst.get_flight_details(
+                DummyFlight(flight_obj_or_id)
+            )
 
         if not details or not isinstance(details, dict):
             return None
@@ -147,7 +191,11 @@ def fetch_direct_clickhandler(fr_api_inst, flight_obj_or_id) -> dict | None:
         images = ac.get("images") or {}
         large_images = images.get("large") or images.get("medium") or []
 
-        if large_images and isinstance(large_images, list) and len(large_images) > 0:
+        if (
+            large_images
+            and isinstance(large_images, list)
+            and len(large_images) > 0
+        ):
             image_url = large_images[0].get("src")
 
         if not image_url and f_reg != "未知":
@@ -166,13 +214,15 @@ def fetch_direct_clickhandler(fr_api_inst, flight_obj_or_id) -> dict | None:
         return None
 
 
-def search_single_target_worker(target_raw: str, all_flights: list, fr_api_inst) -> dict | None:
+def search_single_target_worker(
+    target_raw: str, all_flights: list, fr_api_inst
+) -> dict | None:
     target_clean = target_raw.replace("-", "")
     flight_map_by_id = {
         getattr(f, "id", ""): f for f in all_flights if getattr(f, "id", "")
     }
 
-    # 1. 廣播數據比對
+    # 階段 1：直播廣播數據比對
     for flight in all_flights:
         f_num = (getattr(flight, "number", "") or "").upper()
         f_callsign = (getattr(flight, "callsign", "") or "").upper()
@@ -191,8 +241,16 @@ def search_single_target_worker(target_raw: str, all_flights: list, fr_api_inst)
                 is_tw = check_is_taiwan(dest)
                 return {
                     "target": target_raw,
-                    "f_num": details["f_num"] if details["f_num"] != "未知" else (f_num or f_callsign),
-                    "f_reg": details["f_reg"] if details["f_reg"] != "未知" else (f_reg or target_raw),
+                    "f_num": (
+                        details["f_num"]
+                        if details["f_num"] != "未知"
+                        else (f_num or f_callsign)
+                    ),
+                    "f_reg": (
+                        details["f_reg"]
+                        if details["f_reg"] != "未知"
+                        else (f_reg or target_raw)
+                    ),
                     "ac_code": details["ac_code"],
                     "route": f"{details['origin']} ➔ {dest}",
                     "eta_time": details["eta_time"],
@@ -201,11 +259,16 @@ def search_single_target_worker(target_raw: str, all_flights: list, fr_api_inst)
                     "source": "📡 直播廣播",
                 }
 
-    # 2. Web API 線上反查 (加上 API 限流保護與緩衝)
-    search_url = f"https://www.flightradar24.com/v1/search/web/find?query={target_raw}"
+    # 階段 2：Web API 反查 (加入動態 Headers 與防頻率調控)
+    time.sleep(random.uniform(0.1, 0.4))  # 避開併行特徵
+    search_url = (
+        f"https://www.flightradar24.com/v1/search/web/find?query={target_raw}"
+    )
 
     try:
-        res = http_session.get(search_url, timeout=5)
+        res = http_session.get(
+            search_url, headers=get_random_headers(), timeout=5
+        )
         if res.status_code == 200:
             results = sorted(
                 res.json().get("results", []),
@@ -216,15 +279,25 @@ def search_single_target_worker(target_raw: str, all_flights: list, fr_api_inst)
                     live_id = str(item.get("id", "")).strip()
                     if live_id:
                         target_obj = flight_map_by_id.get(live_id, live_id)
-                        details = fetch_direct_clickhandler(fr_api_inst, target_obj)
+                        details = fetch_direct_clickhandler(
+                            fr_api_inst, target_obj
+                        )
 
                         if details:
                             dest = details["destination"]
                             is_tw = check_is_taiwan(dest)
                             return {
                                 "target": target_raw,
-                                "f_num": details["f_num"] if details["f_num"] != "未知" else target_raw,
-                                "f_reg": details["f_reg"] if details["f_reg"] != "未知" else target_raw,
+                                "f_num": (
+                                    details["f_num"]
+                                    if details["f_num"] != "未知"
+                                    else target_raw
+                                ),
+                                "f_reg": (
+                                    details["f_reg"]
+                                    if details["f_reg"] != "未知"
+                                    else target_raw
+                                ),
                                 "ac_code": details["ac_code"],
                                 "route": f"{details['origin']} ➔ {dest}",
                                 "eta_time": details["eta_time"],
@@ -250,11 +323,25 @@ def send_discord_webhook(taiwan_flights: list):
             "title": f"🚨 彩繪機降落台灣警報：{f['f_num']}",
             "color": 15158332,
             "fields": [
-                {"name": "機身註冊號", "value": f"`{f['f_reg']}` ({f['ac_code']})", "inline": True},
-                {"name": "航線狀況", "value": f"📍 **{f['route']}**", "inline": True},
-                {"name": "預計抵達 (UTC+8)", "value": f"🕒 `{f['eta_time']}`", "inline": False},
+                {
+                    "name": "機身註冊號",
+                    "value": f"`{f['f_reg']}` ({f['ac_code']})",
+                    "inline": True,
+                },
+                {
+                    "name": "航線狀況",
+                    "value": f"📍 **{f['route']}**",
+                    "inline": True,
+                },
+                {
+                    "name": "預計抵達 (UTC+8)",
+                    "value": f"🕒 `{f['eta_time']}`",
+                    "inline": False,
+                },
             ],
-            "footer": {"text": f"FR24 智慧航班監測系統 • 來源：{f['source']}"},
+            "footer": {
+                "text": f"FR24 智慧航班監測系統 • 來源：{f['source']}"
+            },
         }
         if f.get("image_url"):
             embed["image"] = {"url": f["image_url"]}
@@ -262,19 +349,25 @@ def send_discord_webhook(taiwan_flights: list):
         embeds.append(embed)
 
     for i in range(0, len(embeds), 10):
-        batch = embeds[i:i+10]
+        batch = embeds[i : i + 10]
         payload = {"embeds": batch}
         try:
-            res = http_session.post(DISCORD_WEBHOOK_URL, json=payload, timeout=5)
+            res = http_session.post(
+                DISCORD_WEBHOOK_URL, json=payload, timeout=5
+            )
             if res.status_code in [200, 204]:
-                print(f"✅ 成功推播第 {i//10 + 1} 批共 {len(batch)} 架降落台灣航班！")
+                print(
+                    f"✅ 成功推播第 {i//10 + 1} 批共 {len(batch)} 架降落台灣航班！"
+                )
             else:
-                print(f"❌ Discord 發送失敗，HTTP 狀態碼: {res.status_code}")
+                print(
+                    f"❌ Discord 發送失敗，HTTP 狀態碼: {res.status_code}"
+                )
         except Exception as e:
             print(f"❌ Discord 發送異常: {e}")
 
 
-# --- 4. 主程序執行 ---
+# --- 4. 主程式 ---
 def main():
     if not TARGETS:
         print("🛑 沒有設定監控目標，程式結束。")
@@ -283,10 +376,12 @@ def main():
     print("🚀 開始執行多輪穩定度搜尋...")
 
     matched_dict = {}
-    stable_threshold = 10
+    stable_threshold = 5  # 調小穩定門檻，避免被連續 Rate Limit 卡死輪詢
     last_unmatched_count = -1
     stable_counter = 0
     current_round = 0
+
+    fr_api_inst = FlightRadar24API()
 
     while True:
         current_round += 1
@@ -304,7 +399,9 @@ def main():
             last_unmatched_count = current_unmatched_count
 
         if stable_counter >= stable_threshold:
-            print(f"\n✅ 數據已穩定！連續 {stable_threshold} 輪未查到數量維持在 {current_unmatched_count} 架，結束輪詢。")
+            print(
+                f"\n✅ 數據已穩定！連續 {stable_threshold} 輪未查到數量維持在 {current_unmatched_count} 架，結束輪詢。"
+            )
             break
 
         print(
@@ -312,14 +409,13 @@ def main():
             f"（剩餘待查：{current_unmatched_count} 架 | 穩定進度：{stable_counter}/{stable_threshold}）"
         )
 
-        # 每輪重新初始化獨立 API instance，強制抓取最新廣播快照
-        fr_api_inst = FlightRadar24API()
+        # 抓取全球快照
         try:
             snapshot = fr_api_inst.get_flights() or []
         except Exception:
             snapshot = []
 
-        # 重點：將 max_workers 改回安全的 3，防止被 FR24 觸發 Rate Limit (429)
+        # 使用安全的 3 workers，配合隨機延遲偽裝
         with ThreadPoolExecutor(max_workers=3) as executor:
             future_to_target = {
                 executor.submit(
@@ -337,7 +433,7 @@ def main():
                 except Exception:
                     pass
 
-        time.sleep(1)
+        time.sleep(1.5)
 
     taiwan_flights = [f for f in matched_dict.values() if f["is_taiwan"]]
 
