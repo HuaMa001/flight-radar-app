@@ -53,6 +53,22 @@ http_session = get_http_session()
 
 
 # --- 2. 輔助函式定義 ---
+def load_targets_from_txt(filepath: str = "targets.txt") -> list[str]:
+    """從 txt 檔案讀取監控清單 (逐行讀取、轉大寫、去空白)"""
+    if not os.path.exists(filepath):
+        return []
+    try:
+        with open(filepath, "r", encoding="utf-8") as f:
+            targets = [
+                line.strip().upper()
+                for line in f
+                if line.strip() and not line.strip().startswith("#")
+            ]
+            return targets
+    except Exception:
+        return []
+
+
 def format_full_datetime(ts: int | None) -> str:
     """將 Unix Timestamp 轉為 UTC+8 時區的完整日期與時間 (YYYY-MM-DD HH:MM)"""
     if not ts:
@@ -306,22 +322,18 @@ st.title("✈️ FlightRadar24 彩繪機降落台灣監測")
 if "matched_dict" not in st.session_state:
     st.session_state["matched_dict"] = {}
 
-# 動態從 GitHub Repository Variables / 環境變數讀取 TARGET_PLANES
-raw_targets = os.getenv("TARGET_PLANES", "")
-
-if raw_targets and raw_targets.strip():
-    DEFAULT_TARGETS = [
-        t.strip().upper()
-        for t in raw_targets.replace("\n", ",").split(",")
-        if t.strip()
-    ]
-else:
-    DEFAULT_TARGETS = []
-
+# 從 targets.txt 讀取預設目標
+DEFAULT_TARGETS = load_targets_from_txt("targets.txt")
 default_text_value = "\n".join(DEFAULT_TARGETS)
 
 with st.sidebar:
     st.header("⚙️ 監控清單")
+    
+    if DEFAULT_TARGETS:
+        st.caption(f"📁 已從 `targets.txt` 載入 {len(DEFAULT_TARGETS)} 架預設目標")
+    else:
+        st.warning("⚠️ 未偵測到 `targets.txt` 或檔案內容為空白")
+
     st.info("💡 輸入「機身編號/註冊號」")
 
     flight_input = st.text_area(
