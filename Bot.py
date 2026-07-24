@@ -340,7 +340,7 @@ def main():
     print("🚀 開始執行多輪穩定度搜尋...")
 
     matched_dict = {}
-    stable_threshold = 5
+    stable_threshold = 15
     last_unmatched_count = -1
     stable_counter = 0
     current_round = 0
