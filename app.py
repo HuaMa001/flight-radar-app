@@ -1,5 +1,6 @@
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta, timezone
+import os
 import time
 import pandas as pd
 import pydeck as pdk
@@ -305,15 +306,17 @@ st.title("✈️ FlightRadar24 彩繪機降落台灣監測")
 if "matched_dict" not in st.session_state:
     st.session_state["matched_dict"] = {}
 
-DEFAULT_TARGETS = [
-    "B-KQU", "B-LRJ", "B-LJE", "HL7628", "B-18918", "B-18311", "B-18007",
-    "B-5390", "JA872A", "B-17812", "B-16715", "JA880A", "JA731A", "JA875A",
-    "JA614A", "9V-SWI", "9V-SWJ", "B-2032", "B-6091", "B-6093", "HL7732",
-    "HL8071", "HS-TKQ", "HL7783", "VN-A897", "VN-A327", "B-6538", "PK-GMH",
-    "PH-BVD", "9V-OJJ", "JA73AB", "JA894A", "B-18101", "A6-EXR", "A6-EES",
-    "A6-EET", "A6-EEP", "A6-DDE", "A6-BLV", "A6-BMH", "LX-NCL", "LX-VCF",
-    "HL7423", "HL7419", "JA12KZ", "N771CK", "N454PA", "N249BA"
-]
+# 動態從 GitHub Variables / 環境變數載入 TARGET_PLANES
+raw_targets = os.getenv("TARGET_PLANES", "")
+
+if raw_targets and raw_targets.strip():
+    DEFAULT_TARGETS = [
+        t.strip().upper()
+        for t in raw_targets.replace("\n", ",").split(",")
+        if t.strip()
+    ]
+else:
+    DEFAULT_TARGETS = []
 
 default_text_value = "\n".join(DEFAULT_TARGETS)
 
@@ -322,7 +325,10 @@ with st.sidebar:
     st.info("💡 輸入「機身編號/註冊號」")
 
     flight_input = st.text_area(
-        "飛機代碼清單 (每行一班)", value=default_text_value, height=280
+        "飛機代碼清單 (每行一班)",
+        value=default_text_value,
+        height=280,
+        placeholder="例如：\nB-KQU\nB-LRJ\nHL7628"
     )
 
     targets = [f.strip().upper() for f in flight_input.split("\n") if f.strip()]
