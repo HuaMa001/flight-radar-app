@@ -1,4 +1,3 @@
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta, timezone
 import os
 import random
@@ -13,7 +12,7 @@ DISCORD_WEBHOOK_URL = os.getenv(
 
 
 def load_targets(filepath: str = "targets.txt") -> list[str]:
-    """優先從 txt 檔案讀取監控清單，若不存在則嘗試讀取環境變數 TARGET_PLANES"""
+    """從 targets.txt 讀取監控清單，若不存在則嘗試讀取環境變數 TARGET_PLANES"""
     targets = []
 
     if os.path.exists(filepath):
@@ -43,8 +42,8 @@ def load_targets(filepath: str = "targets.txt") -> list[str]:
             ]
             print(f"📋 成功從環境變數載入 {len(targets)} 架目標飛機！")
 
-    unique_targets = list(dict.fromkeys(targets))
-    return unique_targets
+    # 去重並保持順序
+    return list(dict.fromkeys(targets))
 
 
 TARGETS = load_targets("targets.txt")
@@ -52,11 +51,12 @@ TARGETS = load_targets("targets.txt")
 http_session = requests.Session()
 
 
-def get_random_headers():
+def get_headers():
+    """產生擬真瀏覽器請求 Header"""
     user_agents = [
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
         "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
-        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:125.0) Gecko/20100101 Firefox/125.0",
     ]
     return {
         "User-Agent": random.choice(user_agents),
@@ -67,8 +67,9 @@ def get_random_headers():
     }
 
 
-# --- 2. 核心判斷與查詢邏輯 ---
+# --- 2. 輔助與 API 查詢函式 ---
 def format_full_datetime(ts: int | None) -> str:
+    """Unix Timestamp 轉 UTC+8 字串 (YYYY-MM-DD HH:MM)"""
     if not ts:
         return "未知"
     try:
@@ -80,6 +81,7 @@ def format_full_datetime(ts: int | None) -> str:
 
 
 def check_is_taiwan(text_or_code: str) -> bool:
+    """精準判斷機場代碼或名稱是否屬於台灣"""
     if not text_or_code or text_or_code == "未知":
         return False
     s = str(text_or_code).upper().strip()
@@ -100,11 +102,12 @@ def check_is_taiwan(text_or_code: str) -> bool:
 
 
 def fetch_planespotters_image(registration: str) -> str | None:
+    """備用圖片 API"""
     if not registration or registration == "未知":
         return None
     try:
         url = f"https://api.planespotters.net/pub/photos/reg/{registration}"
-        res = http_session.get(url, headers=get_random_headers(), timeout=4)
+        res = http_session.get(url, headers=get_headers(), timeout=4)
         if res.status_code == 200:
             photos = res.json().get("photos", [])
             if photos:
@@ -115,6 +118,7 @@ def fetch_planespotters_image(registration: str) -> str | None:
 
 
 def fetch_direct_clickhandler(fr_api_inst, flight_obj_or_id) -> dict | None:
+    """向 FR24 取得單一航班詳細資訊"""
     try:
         if hasattr(flight_obj_or_id, "id"):
             details = fr_api_inst.get_flight_details(flight_obj_or_id)
@@ -188,47 +192,11 @@ def fetch_direct_clickhandler(fr_api_inst, flight_obj_or_id) -> dict | None:
         return None
 
 
-def fetch_multi_zone_snapshot(fr_api_inst) -> list:
-    """正確呼叫 API 獲取全球及區域航班快照"""
-    all_flights_dict = {}
-
-    # 1. 抓取標準全域快照
-    try:
-        global_flights = fr_api_inst.get_flights() or []
-        for f in global_flights:
-            fid = getattr(f, "id", None)
-            if fid:
-                all_flights_dict[fid] = f
-    except Exception:
-        pass
-
-    # 2. 抓取特定區域 (亞洲、歐洲、北美) 邊界數據擴充
-    try:
-        zones = fr_api_inst.get_zones()
-        for zone_key in ["asia", "europe", "northamerica"]:
-            if zone_key in zones:
-                try:
-                    bounds = fr_api_inst.get_bounds(zones[zone_key])
-                    regional_flights = fr_api_inst.get_flights(bounds=bounds) or []
-                    for f in regional_flights:
-                        fid = getattr(f, "id", None)
-                        if fid and fid not in all_flights_dict:
-                            all_flights_dict[fid] = f
-                except Exception:
-                    pass
-    except Exception:
-        pass
-
-    return list(all_flights_dict.values())
-
-
-def search_single_target_worker(target_raw: str, all_flights: list, fr_api_inst) -> dict | None:
+def search_single_target(target_raw: str, all_flights: list, flight_map_by_id: dict, fr_api_inst) -> dict | None:
+    """雙階段搜尋 Worker (單線程版)"""
     target_clean = target_raw.replace("-", "")
-    flight_map_by_id = {
-        getattr(f, "id", ""): f for f in all_flights if getattr(f, "id", "")
-    }
 
-    # 階段 1：直播廣播數據比對
+    # 階段 1：直播廣播數據記憶體快速比對
     for flight in all_flights:
         f_num = (getattr(flight, "number", "") or "").upper()
         f_callsign = (getattr(flight, "callsign", "") or "").upper()
@@ -257,12 +225,12 @@ def search_single_target_worker(target_raw: str, all_flights: list, fr_api_inst)
                     "source": "📡 直播廣播",
                 }
 
-    # 階段 2：Web API 線上反查
-    time.sleep(random.uniform(0.1, 0.3))
+    # 階段 2： Web API 反查（加入 0.4 秒間隔防 Rate Limit）
+    time.sleep(0.4)
     search_url = f"https://www.flightradar24.com/v1/search/web/find?query={target_raw}"
 
     try:
-        res = http_session.get(search_url, headers=get_random_headers(), timeout=5)
+        res = http_session.get(search_url, headers=get_headers(), timeout=5)
         if res.status_code == 200:
             results = sorted(
                 res.json().get("results", []),
@@ -295,7 +263,7 @@ def search_single_target_worker(target_raw: str, all_flights: list, fr_api_inst)
     return None
 
 
-# --- 3. Discord 推播 ---
+# --- 3. Discord 推播發送 ---
 def send_discord_webhook(taiwan_flights: list):
     if not DISCORD_WEBHOOK_URL:
         print("⚠️ 未設定 DISCORD Webhook URL，跳過推播。")
@@ -331,64 +299,38 @@ def send_discord_webhook(taiwan_flights: list):
             print(f"❌ Discord 發送異常: {e}")
 
 
-# --- 4. 主程式 ---
+# --- 4. 主程序執行 ---
 def main():
     if not TARGETS:
         print("🛑 沒有偵測到任何監控目標，程式結束。")
         return
 
-    print("🚀 開始執行多輪穩定度搜尋...")
-
-    matched_dict = {}
-    stable_threshold = 15
-    last_unmatched_count = -1
-    stable_counter = 0
-    current_round = 0
+    print(f"🚀 開始監控 {len(TARGETS)} 架目標航班...")
 
     fr_api_inst = FlightRadar24API()
 
-    while True:
-        current_round += 1
-        pending_targets = [t for t in TARGETS if t not in matched_dict]
-        current_unmatched_count = len(pending_targets)
+    # 1. 一次性獲取全球廣播快照
+    try:
+        snapshot = fr_api_inst.get_flights() or []
+    except Exception:
+        snapshot = []
 
-        if current_unmatched_count == 0:
-            print("🎉 所有目標皆已在空中順利定位！")
-            break
+    print(f"📡 成功獲取全球廣播快照，包含 {len(snapshot)} 架即時航班資訊。")
 
-        if current_unmatched_count == last_unmatched_count:
-            stable_counter += 1
+    flight_map_by_id = {
+        getattr(f, "id", ""): f for f in snapshot if getattr(f, "id", "")
+    }
+
+    matched_dict = {}
+
+    # 2. 單線程依序查詢，確保絕不觸發 Cloudflare 風控
+    for idx, target in enumerate(TARGETS, start=1):
+        res = search_single_target(target, snapshot, flight_map_by_id, fr_api_inst)
+        if res:
+            matched_dict[target] = res
+            print(f"  [{idx:02d}/{len(TARGETS)}] 🟢 抓到目標 {target} -> {res['f_num']} ({res['route']})")
         else:
-            stable_counter = 1
-            last_unmatched_count = current_unmatched_count
-
-        if stable_counter >= stable_threshold:
-            print(f"\n✅ 數據已穩定！連續 {stable_threshold} 輪未查到數量維持在 {current_unmatched_count} 架，結束輪詢。")
-            break
-
-        print(f"⚡ 第 {current_round:02d} 輪掃描... （待查：{current_unmatched_count} 架 | 穩定進度：{stable_counter}/{stable_threshold}）")
-
-        snapshot = fetch_multi_zone_snapshot(fr_api_inst)
-        print(f" └─ 📡 本輪成功融合全域與區域廣播數據，共獲得 {len(snapshot)} 架即時航班數據")
-
-        with ThreadPoolExecutor(max_workers=3) as executor:
-            future_to_target = {
-                executor.submit(
-                    search_single_target_worker, target, snapshot, fr_api_inst
-                ): target
-                for target in pending_targets
-            }
-
-            for future in as_completed(future_to_target):
-                target = future_to_target[future]
-                try:
-                    res = future.result()
-                    if res:
-                        matched_dict[target] = res
-                except Exception:
-                    pass
-
-        time.sleep(1)
+            print(f"  [{idx:02d}/{len(TARGETS)}] 🔴 未在空中：{target}")
 
     taiwan_flights = [f for f in matched_dict.values() if f["is_taiwan"]]
 
@@ -408,4 +350,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-    
