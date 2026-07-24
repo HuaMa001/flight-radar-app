@@ -306,7 +306,7 @@ st.title("✈️ FlightRadar24 彩繪機降落台灣監測")
 if "matched_dict" not in st.session_state:
     st.session_state["matched_dict"] = {}
 
-# 動態從 GitHub Variables / 環境變數載入 TARGET_PLANES
+# 動態從 GitHub Repository Variables / 環境變數讀取 TARGET_PLANES
 raw_targets = os.getenv("TARGET_PLANES", "")
 
 if raw_targets and raw_targets.strip():
@@ -328,7 +328,7 @@ with st.sidebar:
         "飛機代碼清單 (每行一班)",
         value=default_text_value,
         height=280,
-        placeholder="例如：\nB-KQU\nB-LRJ\nHL7628"
+        placeholder="請輸入機號（每行一個，例如：\nB-KQU\nB-LRJ\nHL7628）"
     )
 
     targets = [f.strip().upper() for f in flight_input.split("\n") if f.strip()]
