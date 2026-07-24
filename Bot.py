@@ -6,29 +6,51 @@ import time
 import requests
 from FlightRadarAPI import FlightRadar24API
 
-# --- 1. 環境變數與初始化 ---
+# --- 1. 環境變數與 targets.txt 讀取邏輯 ---
 DISCORD_WEBHOOK_URL = os.getenv(
     "DISCORD_WEBHOOK_URL", os.getenv("DISCORD", "")
 )
 
-raw_targets = os.getenv("TARGET_PLANES", "")
 
-if raw_targets and raw_targets.strip():
-    cleaned_raw = (
-        raw_targets.replace("\r", "")
-        .replace("\n", ",")
-        .replace("，", ",")
-        .replace('"', "")
-        .replace("'", "")
-    )
-    raw_list = [
-        t.strip().upper() for t in cleaned_raw.split(",") if t.strip()
-    ]
-    TARGETS = list(dict.fromkeys(raw_list))
-    print(f"📋 成功載入 {len(TARGETS)} 架目標飛機！")
-else:
-    print("⚠️ 未偵測到 TARGET_PLANES 變數，程式停止。")
-    TARGETS = []
+def load_targets(filepath: str = "targets.txt") -> list[str]:
+    """優先從 txt 檔案讀取監控清單，若不存在則嘗試讀取環境變數 TARGET_PLANES"""
+    targets = []
+
+    # 1. 嘗試從 targets.txt 讀取
+    if os.path.exists(filepath):
+        try:
+            with open(filepath, "r", encoding="utf-8") as f:
+                targets = [
+                    line.strip().upper()
+                    for line in f
+                    if line.strip() and not line.strip().startswith("#")
+                ]
+            print(f"📁 成功從 `{filepath}` 載入 {len(targets)} 架目標飛機！")
+        except Exception as e:
+            print(f"⚠️ 讀取 `{filepath}` 失敗: {e}")
+
+    # 2. 若 txt 讀取不到或為空，備援改讀環境變數
+    if not targets:
+        raw_targets = os.getenv("TARGET_PLANES", "")
+        if raw_targets and raw_targets.strip():
+            cleaned_raw = (
+                raw_targets.replace("\r", "")
+                .replace("\n", ",")
+                .replace("，", ",")
+                .replace('"', "")
+                .replace("'", "")
+            )
+            targets = [
+                t.strip().upper() for t in cleaned_raw.split(",") if t.strip()
+            ]
+            print(f"📋 成功從環境變數載入 {len(targets)} 架目標飛機！")
+
+    # 去重並維持順序
+    unique_targets = list(dict.fromkeys(targets))
+    return unique_targets
+
+
+TARGETS = load_targets("targets.txt")
 
 http_session = requests.Session()
 
@@ -260,7 +282,7 @@ def search_single_target_worker(
                 }
 
     # 階段 2：Web API 反查 (加入動態 Headers 與防頻率調控)
-    time.sleep(random.uniform(0.1, 0.4))  # 避開併行特徵
+    time.sleep(random.uniform(0.1, 0.4))
     search_url = (
         f"https://www.flightradar24.com/v1/search/web/find?query={target_raw}"
     )
@@ -370,13 +392,13 @@ def send_discord_webhook(taiwan_flights: list):
 # --- 4. 主程式 ---
 def main():
     if not TARGETS:
-        print("🛑 沒有設定監控目標，程式結束。")
+        print("🛑 沒有偵測到任何監控目標，程式結束。")
         return
 
     print("🚀 開始執行多輪穩定度搜尋...")
 
     matched_dict = {}
-    stable_threshold = 5  # 調小穩定門檻，避免被連續 Rate Limit 卡死輪詢
+    stable_threshold = 5
     last_unmatched_count = -1
     stable_counter = 0
     current_round = 0
@@ -409,13 +431,11 @@ def main():
             f"（剩餘待查：{current_unmatched_count} 架 | 穩定進度：{stable_counter}/{stable_threshold}）"
         )
 
-        # 抓取全球快照
         try:
             snapshot = fr_api_inst.get_flights() or []
         except Exception:
             snapshot = []
 
-        # 使用安全的 3 workers，配合隨機延遲偽裝
         with ThreadPoolExecutor(max_workers=3) as executor:
             future_to_target = {
                 executor.submit(
