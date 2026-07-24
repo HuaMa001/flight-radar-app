@@ -10,7 +10,6 @@ DISCORD_WEBHOOK_URL = os.getenv(
     "DISCORD_WEBHOOK_URL", os.getenv("DISCORD", "")
 )
 
-# 讀取並清洗 TARGET_PLANES（自動去重、清理空白與引號）
 raw_targets = os.getenv("TARGET_PLANES", "")
 
 if raw_targets and raw_targets.strip():
@@ -24,13 +23,11 @@ if raw_targets and raw_targets.strip():
     raw_list = [
         t.strip().upper() for t in cleaned_raw.split(",") if t.strip()
     ]
-    TARGETS = list(dict.fromkeys(raw_list))  # 保持順序並自動去重
+    TARGETS = list(dict.fromkeys(raw_list))
     print(f"📋 成功載入 {len(TARGETS)} 架目標飛機！")
 else:
     print("⚠️ 未偵測到 TARGET_PLANES 變數，程式停止。")
     TARGETS = []
-
-fr_api = FlightRadar24API()
 
 http_session = requests.Session()
 http_session.headers.update({
@@ -45,9 +42,8 @@ http_session.headers.update({
 })
 
 
-# --- 2. 核心邏輯函式 (移植自 Streamlit 版本) ---
+# --- 2. 輔助與 API 查詢函式 ---
 def format_full_datetime(ts: int | None) -> str:
-    """將 Unix Timestamp 轉為 UTC+8 時區的完整日期與時間 (YYYY-MM-DD HH:MM)"""
     if not ts:
         return "未知"
     try:
@@ -59,7 +55,6 @@ def format_full_datetime(ts: int | None) -> str:
 
 
 def check_is_taiwan(text_or_code: str) -> bool:
-    """精準判斷機場代碼或名稱是否屬於台灣"""
     if not text_or_code or text_or_code == "未知":
         return False
     s = str(text_or_code).upper().strip()
@@ -69,10 +64,7 @@ def check_is_taiwan(text_or_code: str) -> bool:
         "RCTP", "RCSS", "RCKH", "RCMQ", "RCNN", "RCHU", "RCFG", "RCBS", "RCFN", "RCKW", "RCMT", "RCLY"
     }
 
-    if s in tw_airport_codes:
-        return True
-
-    if len(s) == 4 and s.startswith("RC"):
+    if s in tw_airport_codes or (len(s) == 4 and s.startswith("RC")):
         return True
 
     tw_name_keywords = [
@@ -83,15 +75,13 @@ def check_is_taiwan(text_or_code: str) -> bool:
 
 
 def fetch_planespotters_image(registration: str) -> str | None:
-    """從 Planespotters.net 免費 API 依據機身註冊號獲取照片"""
     if not registration or registration == "未知":
         return None
     try:
         url = f"https://api.planespotters.net/pub/photos/reg/{registration}"
         res = http_session.get(url, timeout=4)
         if res.status_code == 200:
-            data = res.json()
-            photos = data.get("photos", [])
+            photos = res.json().get("photos", [])
             if photos:
                 return (
                     photos[0].get("thumbnail_large", {}).get("src")
@@ -102,16 +92,15 @@ def fetch_planespotters_image(registration: str) -> str | None:
     return None
 
 
-def fetch_direct_clickhandler(flight_obj_or_id) -> dict | None:
-    """索取詳細飛行狀態、起降機場資訊、抵達時間與飛機圖片"""
+def fetch_direct_clickhandler(fr_api_inst, flight_obj_or_id) -> dict | None:
     try:
         if hasattr(flight_obj_or_id, "id"):
-            details = fr_api.get_flight_details(flight_obj_or_id)
+            details = fr_api_inst.get_flight_details(flight_obj_or_id)
         else:
             class DummyFlight:
                 def __init__(self, fid):
                     self.id = fid
-            details = fr_api.get_flight_details(DummyFlight(flight_obj_or_id))
+            details = fr_api_inst.get_flight_details(DummyFlight(flight_obj_or_id))
 
         if not details or not isinstance(details, dict):
             return None
@@ -147,7 +136,6 @@ def fetch_direct_clickhandler(flight_obj_or_id) -> dict | None:
         f_reg = ac.get("registration") or "未知"
         ac_code = (ac.get("model") or {}).get("code") or "未知"
 
-        # 抓取抵達時間
         time_data = details.get("time") or {}
         sta_ts = (time_data.get("scheduled") or {}).get("arrival")
         eta_ts = (time_data.get("estimated") or {}).get("arrival")
@@ -155,7 +143,6 @@ def fetch_direct_clickhandler(flight_obj_or_id) -> dict | None:
 
         eta_full = format_full_datetime(eta_ts or ata_ts or sta_ts)
 
-        # 抓取照片
         image_url = None
         images = ac.get("images") or {}
         large_images = images.get("large") or images.get("medium") or []
@@ -179,14 +166,13 @@ def fetch_direct_clickhandler(flight_obj_or_id) -> dict | None:
         return None
 
 
-def search_single_target_worker(target_raw: str, all_flights: list) -> dict | None:
-    """單目標雙階段查詢 Worker"""
+def search_single_target_worker(target_raw: str, all_flights: list, fr_api_inst) -> dict | None:
     target_clean = target_raw.replace("-", "")
     flight_map_by_id = {
         getattr(f, "id", ""): f for f in all_flights if getattr(f, "id", "")
     }
 
-    # 階段 1：廣播數據直接比對 (含去符號比對)
+    # 1. 廣播數據比對
     for flight in all_flights:
         f_num = (getattr(flight, "number", "") or "").upper()
         f_callsign = (getattr(flight, "callsign", "") or "").upper()
@@ -199,7 +185,7 @@ def search_single_target_worker(target_raw: str, all_flights: list) -> dict | No
         ]
 
         if matched:
-            details = fetch_direct_clickhandler(flight)
+            details = fetch_direct_clickhandler(fr_api_inst, flight)
             if details:
                 dest = details["destination"]
                 is_tw = check_is_taiwan(dest)
@@ -215,11 +201,11 @@ def search_single_target_worker(target_raw: str, all_flights: list) -> dict | No
                     "source": "📡 直播廣播",
                 }
 
-    # 階段 2：Web API 線上反查
+    # 2. Web API 線上反查 (加上 API 限流保護與緩衝)
     search_url = f"https://www.flightradar24.com/v1/search/web/find?query={target_raw}"
 
     try:
-        res = http_session.get(search_url, timeout=4)
+        res = http_session.get(search_url, timeout=5)
         if res.status_code == 200:
             results = sorted(
                 res.json().get("results", []),
@@ -230,7 +216,7 @@ def search_single_target_worker(target_raw: str, all_flights: list) -> dict | No
                     live_id = str(item.get("id", "")).strip()
                     if live_id:
                         target_obj = flight_map_by_id.get(live_id, live_id)
-                        details = fetch_direct_clickhandler(target_obj)
+                        details = fetch_direct_clickhandler(fr_api_inst, target_obj)
 
                         if details:
                             dest = details["destination"]
@@ -252,9 +238,8 @@ def search_single_target_worker(target_raw: str, all_flights: list) -> dict | No
     return None
 
 
-# --- 3. Discord 推播發送 ---
+# --- 3. Discord 推播 ---
 def send_discord_webhook(taiwan_flights: list):
-    """發送 Discord 美化 Rich Embed"""
     if not DISCORD_WEBHOOK_URL:
         print("⚠️ 未設定 DISCORD Webhook URL，跳過推播。")
         return
@@ -263,7 +248,7 @@ def send_discord_webhook(taiwan_flights: list):
     for f in taiwan_flights:
         embed = {
             "title": f"🚨 彩繪機降落台灣警報：{f['f_num']}",
-            "color": 15158332,  # 紅色 / 警報色
+            "color": 15158332,
             "fields": [
                 {"name": "機身註冊號", "value": f"`{f['f_reg']}` ({f['ac_code']})", "inline": True},
                 {"name": "航線狀況", "value": f"📍 **{f['route']}**", "inline": True},
@@ -276,7 +261,6 @@ def send_discord_webhook(taiwan_flights: list):
 
         embeds.append(embed)
 
-    # Discord 限制單次最多 10 個 Embeds，進行批次發送
     for i in range(0, len(embeds), 10):
         batch = embeds[i:i+10]
         payload = {"embeds": batch}
@@ -320,7 +304,7 @@ def main():
             last_unmatched_count = current_unmatched_count
 
         if stable_counter >= stable_threshold:
-            print(f"\n✅ 數據已穩定！連續 {stable_threshold} 輪未查到數量維持在 {current_unmatched_count} 架，結束多線程輪詢。")
+            print(f"\n✅ 數據已穩定！連續 {stable_threshold} 輪未查到數量維持在 {current_unmatched_count} 架，結束輪詢。")
             break
 
         print(
@@ -328,15 +312,18 @@ def main():
             f"（剩餘待查：{current_unmatched_count} 架 | 穩定進度：{stable_counter}/{stable_threshold}）"
         )
 
+        # 每輪重新初始化獨立 API instance，強制抓取最新廣播快照
+        fr_api_inst = FlightRadar24API()
         try:
-            snapshot = fr_api.get_flights() or []
+            snapshot = fr_api_inst.get_flights() or []
         except Exception:
             snapshot = []
 
-        with ThreadPoolExecutor(max_workers=8) as executor:
+        # 重點：將 max_workers 改回安全的 3，防止被 FR24 觸發 Rate Limit (429)
+        with ThreadPoolExecutor(max_workers=3) as executor:
             future_to_target = {
                 executor.submit(
-                    search_single_target_worker, target, snapshot
+                    search_single_target_worker, target, snapshot, fr_api_inst
                 ): target
                 for target in pending_targets
             }
@@ -350,7 +337,7 @@ def main():
                 except Exception:
                     pass
 
-        time.sleep(0.5)
+        time.sleep(1)
 
     taiwan_flights = [f for f in matched_dict.values() if f["is_taiwan"]]
 
