@@ -189,21 +189,36 @@ def fetch_direct_clickhandler(fr_api_inst, flight_obj_or_id) -> dict | None:
 
 
 def fetch_multi_zone_snapshot(fr_api_inst) -> list:
-    """多區域快照抓取：一次抓取全域 + 亞洲 + 歐洲 + 北美區域，確保極高的涵蓋率"""
+    """正確呼叫 API 獲取全球及區域航班快照"""
     all_flights_dict = {}
-    
-    # 依序抓取關鍵區域
-    zones_to_fetch = [None, "asia", "europe", "northamerica"]
-    for zone in zones_to_fetch:
-        try:
-            flights = fr_api_inst.get_flights(zone=zone) or []
-            for f in flights:
-                fid = getattr(f, "id", None)
-                if fid and fid not in all_flights_dict:
-                    all_flights_dict[fid] = f
-        except Exception:
-            pass
-            
+
+    # 1. 抓取標準全域快照
+    try:
+        global_flights = fr_api_inst.get_flights() or []
+        for f in global_flights:
+            fid = getattr(f, "id", None)
+            if fid:
+                all_flights_dict[fid] = f
+    except Exception:
+        pass
+
+    # 2. 抓取特定區域 (亞洲、歐洲、北美) 邊界數據擴充
+    try:
+        zones = fr_api_inst.get_zones()
+        for zone_key in ["asia", "europe", "northamerica"]:
+            if zone_key in zones:
+                try:
+                    bounds = fr_api_inst.get_bounds(zones[zone_key])
+                    regional_flights = fr_api_inst.get_flights(bounds=bounds) or []
+                    for f in regional_flights:
+                        fid = getattr(f, "id", None)
+                        if fid and fid not in all_flights_dict:
+                            all_flights_dict[fid] = f
+                except Exception:
+                    pass
+    except Exception:
+        pass
+
     return list(all_flights_dict.values())
 
 
@@ -213,7 +228,7 @@ def search_single_target_worker(target_raw: str, all_flights: list, fr_api_inst)
         getattr(f, "id", ""): f for f in all_flights if getattr(f, "id", "")
     }
 
-    # 階段 1：直播廣播數據直接比對 (含無橫槓比對)
+    # 階段 1：直播廣播數據比對
     for flight in all_flights:
         f_num = (getattr(flight, "number", "") or "").upper()
         f_callsign = (getattr(flight, "callsign", "") or "").upper()
@@ -243,7 +258,7 @@ def search_single_target_worker(target_raw: str, all_flights: list, fr_api_inst)
                 }
 
     # 階段 2：Web API 線上反查
-    time.sleep(random.uniform(0.2, 0.5))
+    time.sleep(random.uniform(0.1, 0.3))
     search_url = f"https://www.flightradar24.com/v1/search/web/find?query={target_raw}"
 
     try:
@@ -274,10 +289,7 @@ def search_single_target_worker(target_raw: str, all_flights: list, fr_api_inst)
                                 "image_url": details["image_url"],
                                 "source": "🔍 Web API 反查",
                             }
-        else:
-            # 顯式紀錄非 200 回應，方便排查 Cloudflare 擋存取問題
-            print(f"⚠️ 搜尋 `{target_raw}` 收到非 200 狀態碼: {res.status_code}")
-    except Exception as e:
+    except Exception:
         pass
 
     return None
@@ -356,7 +368,6 @@ def main():
 
         print(f"⚡ 第 {current_round:02d} 輪掃描... （待查：{current_unmatched_count} 架 | 穩定進度：{stable_counter}/{stable_threshold}）")
 
-        # 重點：獲取跨區域多合一快照，涵蓋全域、亞洲、歐洲與北美
         snapshot = fetch_multi_zone_snapshot(fr_api_inst)
         print(f" └─ 📡 本輪成功融合全域與區域廣播數據，共獲得 {len(snapshot)} 架即時航班數據")
 
@@ -377,7 +388,7 @@ def main():
                 except Exception:
                     pass
 
-        time.sleep(1.5)
+        time.sleep(1)
 
     taiwan_flights = [f for f in matched_dict.values() if f["is_taiwan"]]
 
@@ -397,3 +408,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+    
