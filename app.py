@@ -225,7 +225,7 @@ def fetch_direct_clickhandler(flight_obj_or_id) -> dict | None:
 
 
 def search_single_target_worker(target_raw: str, all_flights: list) -> dict | None:
-    """單目標查詢 Worker (包含起降台灣之判斷)"""
+    """單目標查詢 Worker (新增起飛/降落台灣雙重判斷)"""
     target_clean = target_raw.replace("-", "")
 
     flight_map_by_id = {
@@ -253,9 +253,9 @@ def search_single_target_worker(target_raw: str, all_flights: list) -> dict | No
             if details:
                 origin = details["origin"]
                 destination = details["destination"]
-                is_dest_taiwan = check_is_taiwan(destination)
                 is_origin_taiwan = check_is_taiwan(origin)
-                is_taiwan_related = is_dest_taiwan or is_origin_taiwan
+                is_dest_taiwan = check_is_taiwan(destination)
+                is_taiwan_related = is_origin_taiwan or is_dest_taiwan
 
                 return {
                     "監控目標": target_raw,
@@ -295,9 +295,9 @@ def search_single_target_worker(target_raw: str, all_flights: list) -> dict | No
                         if details:
                             origin = details["origin"]
                             destination = details["destination"]
-                            is_dest_taiwan = check_is_taiwan(destination)
                             is_origin_taiwan = check_is_taiwan(origin)
-                            is_taiwan_related = is_dest_taiwan or is_origin_taiwan
+                            is_dest_taiwan = check_is_taiwan(destination)
+                            is_taiwan_related = is_origin_taiwan or is_dest_taiwan
 
                             return {
                                 "監控目標": target_raw,
@@ -323,7 +323,7 @@ def search_single_target_worker(target_raw: str, all_flights: list) -> dict | No
 
 
 # --- 3. UI 介面與側邊欄設定 ---
-st.title("✈️ FlightRadar24 彩繪機降落/起飛台灣監測")
+st.title("✈️ FlightRadar24 彩繪機台灣起降監測 APP")
 
 if "matched_dict" not in st.session_state:
     st.session_state["matched_dict"] = {}
@@ -487,15 +487,15 @@ taiwan_count = (
 col1, col2, col3, col4 = st.columns(4)
 col1.metric("監控目標總數", f"{len(targets)} 架")
 col2.metric("在空中 / 飛行中", f"{len(df_matched)} 架")
-col3.metric("🇹🇼 台灣起降 (出發/抵達)", f"{taiwan_count} 架")
+col3.metric("🇹🇼 預計起降台灣", f"{taiwan_count} 架")
 col4.metric("未查到 / 尚未起飛", f"{len(unmatched_targets)} 架")
 
 if taiwan_count > 0:
-    st.success(f"### 🇹🇼 即時警報：共有 **{taiwan_count}** 架目標班機正在台灣起飛或準備降落！")
+    st.success(f"### 🇹🇼 即時警報：共有 **{taiwan_count}** 架目標班機預計或已經在台灣起降！")
 
 st.divider()
 
-# --- 在空中航班（地圖 + 表格 + 照片預覽） ---
+# --- 1. 在空中航班（地圖 + 表格 + 照片預覽） ---
 if not df_matched.empty:
     df_sorted = (
         df_matched.sort_values(
@@ -570,7 +570,7 @@ if not df_matched.empty:
             "<b>🕒 預計抵達:</b> {預計抵達 (UTC+8)}<br/>"
             "<b>🛩️ 機型:</b> {機型}<br/>"
             "<b>📏 高度:</b> {高度 (ft)} ft | <b>⚡ 地速:</b> {地速 (kts)} kts<br/>"
-            "<b>🇹🇼 台灣起降:</b> 起飛 {起飛台灣} | 降落 {降落台灣}"
+            "<b>🇹🇼 台灣起降:</b> 起飛: {起飛台灣} | 降落: {降落台灣}"
         ),
         "style": {
             "backgroundColor": "rgba(15, 23, 42, 0.90)",
@@ -616,5 +616,5 @@ if not df_matched.empty:
 
     matched_col_config = {
         "編號": st.column_config.NumberColumn("編號", width=50, format="%d"),
-        "機身照片": st.column_config.ImageColumn("機身照片", help="預覽飛機照片"),
-        "起飛台灣": st.column_confi}
+        "機身照片": st.column_config.ImageColumn("機身照片", help="飛機照片預覽"),
+        "起飛台灣": st.column_co
