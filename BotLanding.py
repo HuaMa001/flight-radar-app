@@ -1,3 +1,4 @@
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta, timezone
 import os
 import random
@@ -47,7 +48,11 @@ def load_targets(filepath: str = "targets.txt") -> list[str]:
 
 TARGETS = load_targets("targets.txt")
 
+# ⚡ 優化 HTTP 連線池，支援多線程高併發
 http_session = requests.Session()
+adapter = requests.adapters.HTTPAdapter(pool_connections=20, pool_maxsize=20)
+http_session.mount("https://", adapter)
+http_session.mount("http://", adapter)
 
 
 def get_headers():
@@ -103,7 +108,7 @@ def fetch_planespotters_image(registration: str) -> str | None:
         return None
     try:
         url = f"https://api.planespotters.net/pub/photos/reg/{registration}"
-        res = http_session.get(url, headers=get_headers(), timeout=4)
+        res = http_session.get(url, headers=get_headers(), timeout=3)
         if res.status_code == 200:
             photos = res.json().get("photos", [])
             if photos:
@@ -187,45 +192,36 @@ def fetch_direct_clickhandler(fr_api_inst, flight_obj_or_id) -> dict | None:
         return None
 
 
-def search_single_target(target_raw: str, all_flights: list, flight_map_by_id: dict, fr_api_inst) -> dict | None:
-    """雙階段單目標搜尋 Worker"""
+def search_single_target(target_raw: str, broadcast_lookup: dict, flight_map_by_id: dict, fr_api_inst) -> dict | None:
+    """單目標搜尋 Worker"""
     target_clean = target_raw.replace("-", "")
 
-    # 階段 1：直播廣播數據記憶體快速比對
-    for flight in all_flights:
-        f_num = (getattr(flight, "number", "") or "").upper()
-        f_callsign = (getattr(flight, "callsign", "") or "").upper()
-        f_reg = (getattr(flight, "registration", "") or "").upper()
+    # 階段 1：使用預先建好的 Hash Map 進行快速比對
+    matched_flight = broadcast_lookup.get(target_raw) or broadcast_lookup.get(target_clean)
 
-        matched = target_raw in [f_num, f_callsign, f_reg] or target_clean in [
-            f_num.replace("-", ""),
-            f_callsign.replace("-", ""),
-            f_reg.replace("-", ""),
-        ]
+    if matched_flight:
+        details = fetch_direct_clickhandler(fr_api_inst, matched_flight)
+        if details:
+            dest = details["destination"]
+            is_tw = check_is_taiwan(dest)
+            return {
+                "target": target_raw,
+                "f_num": details["f_num"] if details["f_num"] != "未知" else target_raw,
+                "f_reg": details["f_reg"] if details["f_reg"] != "未知" else target_raw,
+                "ac_code": details["ac_code"],
+                "route": f"{details['origin']} ➔ {dest}",
+                "eta_time": details["eta_time"],
+                "is_taiwan": is_tw,
+                "image_url": details["image_url"],
+                "source": "📡 直播廣播",
+            }
 
-        if matched:
-            details = fetch_direct_clickhandler(fr_api_inst, flight)
-            if details:
-                dest = details["destination"]
-                is_tw = check_is_taiwan(dest)
-                return {
-                    "target": target_raw,
-                    "f_num": details["f_num"] if details["f_num"] != "未知" else (f_num or f_callsign),
-                    "f_reg": details["f_reg"] if details["f_reg"] != "未知" else (f_reg or target_raw),
-                    "ac_code": details["ac_code"],
-                    "route": f"{details['origin']} ➔ {dest}",
-                    "eta_time": details["eta_time"],
-                    "is_taiwan": is_tw,
-                    "image_url": details["image_url"],
-                    "source": "📡 直播廣播",
-                }
-
-    # 階段 2：Web API 反查（加入 0.3 秒間隔避免觸發 Rate Limit）
-    time.sleep(0.3)
+    # 階段 2：Web API 反查（微幅隨機間隔，防觸發 Rate Limit）
+    time.sleep(random.uniform(0.05, 0.15))
     search_url = f"https://www.flightradar24.com/v1/search/web/find?query={target_raw}"
 
     try:
-        res = http_session.get(search_url, headers=get_headers(), timeout=5)
+        res = http_session.get(search_url, headers=get_headers(), timeout=4)
         if res.status_code == 200:
             results = sorted(
                 res.json().get("results", []),
@@ -300,12 +296,14 @@ def main():
         print("🛑 沒有偵測到任何監控目標，程式結束。")
         return
 
-    print(f"🚀 開始監控 {len(TARGETS)} 架目標航班（單線程 + 10 輪穩定度驗證）...")
+    # 動態設定 worker 數量，最佳化的多線程配置
+    MAX_WORKERS = min(10, os.cpu_count() * 2 if os.cpu_count() else 8)
+    print(f"🚀 開始監控 {len(TARGETS)} 架目標航班（開啟 {MAX_WORKERS} 線程併發加速）...")
 
     fr_api_inst = FlightRadar24API()
     matched_dict = {}
 
-    stable_threshold = 10
+    stable_threshold = 15  # 穩定檢測
     last_unmatched_count = -1
     stable_counter = 0
     current_round = 0
@@ -337,29 +335,53 @@ def main():
             f"（待查未飛：{current_unmatched_count} 架 | 穩定進度：{stable_counter}/{stable_threshold}）"
         )
 
-        # 獲取本輪最新全球廣播快照
         try:
             snapshot = fr_api_inst.get_flights() or []
         except Exception:
             snapshot = []
 
-        flight_map_by_id = {
-            getattr(f, "id", ""): f for f in snapshot if getattr(f, "id", "")
-        }
+        flight_map_by_id = {}
+        broadcast_lookup = {}
 
-        # 單線程順序查詢剩餘待查目標
-        for target in pending_targets:
-            res = search_single_target(
-                target, snapshot, flight_map_by_id, fr_api_inst
-            )
-            if res:
-                matched_dict[target] = res
-                print(
-                    f"  └─ 🟢 [第 {current_round:02d} 輪] 抓到目標：{target} "
-                    f"-> {res['f_num']} ({res['route']})"
-                )
+        # ⚡ 預先建立快速查詢的 Hash Map
+        for f in snapshot:
+            fid = getattr(f, "id", "")
+            if fid:
+                flight_map_by_id[fid] = f
 
-        time.sleep(1)
+            for key in [
+                getattr(f, "number", ""),
+                getattr(f, "callsign", ""),
+                getattr(f, "registration", ""),
+            ]:
+                if key:
+                    k_str = str(key).upper().strip()
+                    broadcast_lookup[k_str] = f
+                    broadcast_lookup[k_str.replace("-", "")] = f
+
+        # ⚡ 多線程併發處理剩餘待查目標
+        with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+            future_to_target = {
+                executor.submit(
+                    search_single_target, target, broadcast_lookup, flight_map_by_id, fr_api_inst
+                ): target
+                for target in pending_targets
+            }
+
+            for future in as_completed(future_to_target):
+                target = future_to_target[future]
+                try:
+                    res = future.result()
+                    if res:
+                        matched_dict[target] = res
+                        print(
+                            f"  └─ 🟢 [第 {current_round:02d} 輪] 抓到目標：{target} "
+                            f"-> {res['f_num']} ({res['route']})"
+                        )
+                except Exception:
+                    pass
+
+        time.sleep(0.5)
 
     taiwan_flights = [f for f in matched_dict.values() if f["is_taiwan"]]
 
