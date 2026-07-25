@@ -1,3 +1,4 @@
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta, timezone
 import os
 import random
@@ -47,7 +48,10 @@ def load_targets(filepath: str = "targets.txt") -> list[str]:
 
 TARGETS = load_targets("targets.txt")
 
+# 使用 Session pool 提升 HTTP 連線複用率
 http_session = requests.Session()
+adapter = requests.adapters.HTTPAdapter(pool_connections=20, pool_maxsize=20)
+http_session.mount("https://", adapter)
 
 
 def get_headers():
@@ -103,7 +107,7 @@ def fetch_planespotters_image(registration: str) -> str | None:
         return None
     try:
         url = f"https://api.planespotters.net/pub/photos/reg/{registration}"
-        res = http_session.get(url, headers=get_headers(), timeout=4)
+        res = http_session.get(url, headers=get_headers(), timeout=3)
         if res.status_code == 200:
             photos = res.json().get("photos", [])
             if photos:
@@ -163,7 +167,6 @@ def fetch_direct_clickhandler(fr_api_inst, flight_obj_or_id) -> dict | None:
         etd_ts = (time_data.get("estimated") or {}).get("departure")
         atd_ts = (time_data.get("real") or {}).get("departure")
 
-        # 優先使用預計/預訂/實際起飛時間
         dep_ts = etd_ts or std_ts or atd_ts
         dep_full = format_full_datetime(dep_ts)
 
@@ -192,7 +195,7 @@ def fetch_direct_clickhandler(fr_api_inst, flight_obj_or_id) -> dict | None:
 
 
 def search_single_target(target_raw: str, all_flights: list, flight_map_by_id: dict, fr_api_inst) -> dict | None:
-    """雙階段單目標搜尋 Worker"""
+    """單目標搜尋 Worker"""
     target_clean = target_raw.replace("-", "")
 
     # 階段 1：直播廣播數據記憶體快速比對
@@ -214,10 +217,9 @@ def search_single_target(target_raw: str, all_flights: list, flight_map_by_id: d
                 dest = details["destination"]
                 is_tw_origin = check_is_taiwan(orig)
 
-                # 比對起飛時間是否 > 目前系統時間
                 current_ts = int(time.time())
                 dep_ts = details["dep_ts"]
-                is_future = bool(dep_ts and dep_ts > current_ts)
+                is_future = bool(dep_ts and int(dep_ts) > current_ts)
 
                 return {
                     "target": target_raw,
@@ -233,12 +235,12 @@ def search_single_target(target_raw: str, all_flights: list, flight_map_by_id: d
                     "source": "📡 直播廣播",
                 }
 
-    # 階段 2：Web API 反查（加入 0.3 秒間隔避免觸發 Rate Limit）
-    time.sleep(0.3)
+    # 階段 2：Web API 反查（降低併發間隔）
+    time.sleep(random.uniform(0.05, 0.15))
     search_url = f"https://www.flightradar24.com/v1/search/web/find?query={target_raw}"
 
     try:
-        res = http_session.get(search_url, headers=get_headers(), timeout=5)
+        res = http_session.get(search_url, headers=get_headers(), timeout=4)
         if res.status_code == 200:
             results = sorted(
                 res.json().get("results", []),
@@ -256,10 +258,9 @@ def search_single_target(target_raw: str, all_flights: list, flight_map_by_id: d
                             dest = details["destination"]
                             is_tw_origin = check_is_taiwan(orig)
 
-                            # 比對起飛時間是否 > 目前系統時間
                             current_ts = int(time.time())
                             dep_ts = details["dep_ts"]
-                            is_future = bool(dep_ts and dep_ts > current_ts)
+                            is_future = bool(dep_ts and int(dep_ts) > current_ts)
 
                             return {
                                 "target": target_raw,
@@ -290,7 +291,7 @@ def send_discord_webhook(taiwan_flights: list):
     for f in taiwan_flights:
         embed = {
             "title": f"🚨 彩繪機台灣起飛警報：{f['f_num']}",
-            "color": 3447003,  # 可視需求修改顏色 (例如藍色 3447003)
+            "color": 3447003,
             "fields": [
                 {"name": "機身註冊號", "value": f"`{f['f_reg']}` ({f['ac_code']})", "inline": True},
                 {"name": "航線狀況", "value": f"📍 **{f['route']}**", "inline": True},
@@ -322,12 +323,14 @@ def main():
         print("🛑 沒有偵測到任何監控目標，程式結束。")
         return
 
-    print(f"🚀 開始監控 {len(TARGETS)} 架目標航班（單線程 + 10 輪穩定度驗證）...")
+    # 設定最大並行線程數（預設 8 個線程，速度大幅提升）
+    MAX_WORKERS = min(10, os.cpu_count() * 2 if os.cpu_count() else 8)
+    print(f"🚀 開始監控 {len(TARGETS)} 架目標航班（開啟 {MAX_WORKERS} 線程加速）...")
 
     fr_api_inst = FlightRadar24API()
     matched_dict = {}
 
-    stable_threshold = 10
+    stable_threshold = 5  # 線程加速後，穩定輪數可從 10 降至 5 輪
     last_unmatched_count = -1
     stable_counter = 0
     current_round = 0
@@ -359,7 +362,6 @@ def main():
             f"（待查未飛：{current_unmatched_count} 架 | 穩定進度：{stable_counter}/{stable_threshold}）"
         )
 
-        # 獲取本輪最新全球廣播快照
         try:
             snapshot = fr_api_inst.get_flights() or []
         except Exception:
@@ -369,24 +371,35 @@ def main():
             getattr(f, "id", ""): f for f in snapshot if getattr(f, "id", "")
         }
 
-        # 單線程順序查詢剩餘待查目標
-        for target in pending_targets:
-            res = search_single_target(
-                target, snapshot, flight_map_by_id, fr_api_inst
-            )
-            if res:
-                matched_dict[target] = res
-                print(
-                    f"  └─ 🟢 [第 {current_round:02d} 輪] 抓到目標：{target} "
-                    f"-> {res['f_num']} ({res['route']})"
-                )
+        # ⚡ 多線程並行查詢
+        with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+            future_to_target = {
+                executor.submit(
+                    search_single_target, target, snapshot, flight_map_by_id, fr_api_inst
+                ): target
+                for target in pending_targets
+            }
 
-        time.sleep(1)
+            for future in as_completed(future_to_target):
+                target = future_to_target[future]
+                try:
+                    res = future.result()
+                    if res:
+                        matched_dict[target] = res
+                        print(
+                            f"  └─ 🟢 [第 {current_round:02d} 輪] 抓到目標：{target} "
+                            f"-> {res['f_num']} ({res['route']})"
+                        )
+                except Exception as e:
+                    pass
+
+        time.sleep(0.5)
 
     # 篩選條件：起飛地為台灣 + 起飛時間 > 目前時間
+    now_ts = int(time.time())
     taiwan_departures = [
         f for f in matched_dict.values()
-        if f["is_taiwan_origin"] and f["is_future"]
+        if f["is_taiwan_origin"] and f["dep_ts"] and int(f["dep_ts"]) > now_ts
     ]
 
     print(
