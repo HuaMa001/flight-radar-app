@@ -3,7 +3,7 @@ name: FlightRadar24 Target Monitor
 on:
   # 接收來自 cron-job.org 透過 API 發送的觸發請求
   repository_dispatch:
-    types: [cron_trigger2]
+    types: [cron_trigger_takeOff]
   # 支援 GitHub 網頁上手動點擊按鈕觸發測試
   workflow_dispatch:
 
