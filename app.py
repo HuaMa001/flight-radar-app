@@ -617,4 +617,4 @@ if not df_matched.empty:
     matched_col_config = {
         "編號": st.column_config.NumberColumn("編號", width=50, format="%d"),
         "機身照片": st.column_config.ImageColumn("機身照片", help="預覽飛機照片"),
-        "起飛台灣": st.column_confi
+        "起飛台灣": st.column_confi}
