@@ -1,0 +1,33 @@
+name: FlightRadar24 Target Monitor
+
+on:
+  # 接收來自 cron-job.org 透過 API 發送的觸發請求
+  repository_dispatch:
+    types: [cron_trigger]
+  # 支援 GitHub 網頁上手動點擊按鈕觸發測試
+  workflow_dispatch:
+
+jobs:
+  monitor:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out 程式碼
+        uses: actions/checkout@v4
+
+      - name: 設定 Python 環境
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: 安裝套件
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: 執行監控並推播
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD2 }}
+          TARGET_PLANES: ${{ vars.TARGET_PLANES }} # 👈 關鍵：自動載入 GitHub Variables 的清單
+        run: python Bot2.py
+        
