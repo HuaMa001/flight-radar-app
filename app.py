@@ -402,7 +402,7 @@ with st.sidebar:
 def run_scan_process_until_stable(
     all_targets: list[str],
     is_full_rescan: bool = False,
-    stable_threshold_phase1: int = 15,
+    stable_threshold_phase1: int = 10,
     stable_threshold_phase2: int = 10,
     max_workers_p1: int = 8,
     max_workers_p2: int = 4,
