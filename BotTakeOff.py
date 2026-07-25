@@ -330,7 +330,7 @@ def main():
     fr_api_inst = FlightRadar24API()
     matched_dict = {}
 
-    stable_threshold = 5  # 線程加速後，穩定輪數可從 10 降至 5 輪
+    stable_threshold = 15  # 線程加速後，穩定輪數可從 10 降至 5 輪
     last_unmatched_count = -1
     stable_counter = 0
     current_round = 0
