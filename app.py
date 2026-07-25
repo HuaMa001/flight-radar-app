@@ -505,8 +505,8 @@ taiwan_orig_count = (
 col1, col2, col3, col4, col5 = st.columns(5)
 col1.metric("監控目標總數", f"{len(targets)} 架")
 col2.metric("在空中 / 飛行中", f"{len(df_matched)} 架")
-col3.metric("🛫 台灣起飛", f"{taiwan_orig_count} 架")
-col4.metric("🇹🇼 預計/已降落台灣", f"{taiwan_dest_count} 架")
+col3.metric(""🇹🇼 台灣起飛", f"{taiwan_orig_count} 架")
+col4.metric("🇹🇼 降落台灣", f"{taiwan_dest_count} 架")
 col5.metric("未查到 / 尚未起飛", f"{len(unmatched_targets)} 架")
 
 if taiwan_dest_count > 0 or taiwan_orig_count > 0:
