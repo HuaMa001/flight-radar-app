@@ -190,7 +190,7 @@ def fetch_direct_clickhandler(flight_obj_or_id) -> dict | None:
 
         # 抓取起飛與抵達時間
         time_data = details.get("time") or {}
-        
+
         atd_dep = (time_data.get("real") or {}).get("departure")
         etd_dep = (time_data.get("estimated") or {}).get("departure")
         std_dep = (time_data.get("scheduled") or {}).get("departure")
@@ -612,4 +612,4 @@ st.pydeck_chart(
 st.subheader("🟢 在空中/飛行中航班詳細清單")
 
 if not df_matched.empty:
-    st.info("💡 **點擊下方表格任意航班，表格會自動載入照片、
+    st.info("💡 **點擊下方表格任意航班，表格會自動載入照片、地圖會跳轉至飛機
