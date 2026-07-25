@@ -318,7 +318,7 @@ def main():
     fr_api_inst = FlightRadar24API()
     matched_dict = {}
 
-    stable_threshold = 15
+    stable_threshold = 20
     last_unmatched_count = -1
     stable_counter = 0
     current_round = 0
