@@ -229,8 +229,8 @@ def search_single_target(target_raw: str, all_flights: list, flight_map_by_id: d
                     "source": "📡 直播廣播",
                 }
 
-    # 階段 2：Web API 反查（若為二次核實，增加隨機間隔避免觸發限制）
-    delay = random.uniform(0.3, 0.6) if is_retry else random.uniform(0.05, 0.15)
+    # 階段 2：Web API 反查（二次核實時給予較長的對應延遲）
+    delay = random.uniform(0.2, 0.4) if is_retry else random.uniform(0.05, 0.15)
     time.sleep(delay)
     search_url = f"https://www.flightradar24.com/v1/search/web/find?query={target_raw}"
 
@@ -318,19 +318,19 @@ def main():
     fr_api_inst = FlightRadar24API()
     matched_dict = {}
 
-    stable_threshold = 15
+    # === 第一階段：高速並行掃描 ===
+    stable_threshold_phase1 = 15
     last_unmatched_count = -1
     stable_counter = 0
     current_round = 0
 
-    # 第一階段：快速輪詢掃描
     while True:
         current_round += 1
         pending_targets = [t for t in TARGETS if t not in matched_dict]
         current_unmatched_count = len(pending_targets)
 
         if current_unmatched_count == 0:
-            print("\n🎉 所有目標皆已順利定位！")
+            print("\n🎉 第一階段：所有目標皆已順利定位！")
             break
 
         if current_unmatched_count == last_unmatched_count:
@@ -339,16 +339,16 @@ def main():
             stable_counter = 1
             last_unmatched_count = current_unmatched_count
 
-        if stable_counter >= stable_threshold:
+        if stable_counter >= stable_threshold_phase1:
             print(
-                f"\n✅ 第一階段數據已穩定！未查到數量連續 {stable_threshold} 輪維持在 "
-                f"{current_unmatched_count} 架，準備進行未查到目標核實。"
+                f"\n✅ 第一階段數據已穩定！未查到數量連續 {stable_threshold_phase1} 輪維持在 "
+                f"{current_unmatched_count} 架。"
             )
             break
 
         print(
-            f"\n⚡ 第 {current_round:02d} 輪掃描... "
-            f"（待查未飛：{current_unmatched_count} 架 | 穩定進度：{stable_counter}/{stable_threshold}）"
+            f"\n⚡ [第一階段] 第 {current_round:02d} 輪掃描... "
+            f"（待查：{current_unmatched_count} 架 | 穩定進度：{stable_counter}/{stable_threshold_phase1}）"
         )
 
         try:
@@ -363,7 +363,7 @@ def main():
         with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
             future_to_target = {
                 executor.submit(
-                    search_single_target, target, snapshot, flight_map_by_id, fr_api_inst
+                    search_single_target, target, snapshot, flight_map_by_id, fr_api_inst, False
                 ): target
                 for target in pending_targets
             }
@@ -375,7 +375,7 @@ def main():
                     if res:
                         matched_dict[target] = res
                         print(
-                            f"  └─ 🟢 [第 {current_round:02d} 輪] 抓到目標：{target} "
+                            f"  └─ 🟢 [階段1] 抓到目標：{target} "
                             f"-> {res['f_num']} ({res['route']})"
                         )
                 except Exception:
@@ -383,46 +383,79 @@ def main():
 
         time.sleep(0.5)
 
-    # 第二階段：二次冷卻核實（針對仍未查到的飛機）
+    # === 第二階段：未查到目標二次深層核實 (含 Stable 驗證機制) ===
     unmatched_targets = [t for t in TARGETS if t not in matched_dict]
     if unmatched_targets:
-        RETRY_WAIT_SEC = 15
+        RETRY_WAIT_SEC = 10
         print(f"\n⏳ 進入二次核實階段... 暫停 {RETRY_WAIT_SEC} 秒以解除 API 頻率限制（剩餘未查到：{len(unmatched_targets)} 架）")
         time.sleep(RETRY_WAIT_SEC)
 
-        print("🔍 正在進行二次深度核實掃描...")
-        try:
-            snapshot = fr_api_inst.get_flights() or []
-        except Exception:
-            snapshot = []
+        stable_threshold_phase2 = 5  # 二次核實需連續 5 輪數字穩定
+        retry_last_unmatched = -1
+        retry_stable_counter = 0
+        retry_round = 0
 
-        flight_map_by_id = {
-            getattr(f, "id", ""): f for f in snapshot if getattr(f, "id", "")
-        }
+        while True:
+            retry_round += 1
+            retry_pending = [t for t in TARGETS if t not in matched_dict]
+            retry_unmatched_count = len(retry_pending)
 
-        # 二次核實降低線程數以確保穩定
-        with ThreadPoolExecutor(max_workers=4) as executor:
-            future_to_target = {
-                executor.submit(
-                    search_single_target, target, snapshot, flight_map_by_id, fr_api_inst, True
-                ): target
-                for target in unmatched_targets
+            if retry_unmatched_count == 0:
+                print("\n🎉 二次核實：所有剩餘目標皆已全數定位補齊！")
+                break
+
+            if retry_unmatched_count == retry_last_unmatched:
+                retry_stable_counter += 1
+            else:
+                retry_stable_counter = 1
+                retry_last_unmatched = retry_unmatched_count
+
+            if retry_stable_counter >= stable_threshold_phase2:
+                print(
+                    f"\n✅ 二次核實數據已完全穩定！未查到數量連續 {stable_threshold_phase2} 輪維持在 "
+                    f"{retry_unmatched_count} 架，結束核實。"
+                )
+                break
+
+            print(
+                f"🔍 [二次核實] 第 {retry_round:02d} 輪深度掃描... "
+                f"（剩餘未查：{retry_unmatched_count} 架 | 穩定進度：{retry_stable_counter}/{stable_threshold_phase2}）"
+            )
+
+            try:
+                snapshot = fr_api_inst.get_flights() or []
+            except Exception:
+                snapshot = []
+
+            flight_map_by_id = {
+                getattr(f, "id", ""): f for f in snapshot if getattr(f, "id", "")
             }
 
-            for future in as_completed(future_to_target):
-                target = future_to_target[future]
-                try:
-                    res = future.result()
-                    if res:
-                        matched_dict[target] = res
-                        print(
-                            f"  └─ 🟢 [二次核實成功] 補抓到目標：{target} "
-                            f"-> {res['f_num']} ({res['route']})"
-                        )
-                except Exception:
-                    pass
+            # 二次核實使用較低的線程數 (4 個 workers) 以提高發射成功率
+            with ThreadPoolExecutor(max_workers=4) as executor:
+                future_to_target = {
+                    executor.submit(
+                        search_single_target, target, snapshot, flight_map_by_id, fr_api_inst, True
+                    ): target
+                    for target in retry_pending
+                }
 
-    # 最終統計與推播
+                for future in as_completed(future_to_target):
+                    target = future_to_target[future]
+                    try:
+                        res = future.result()
+                        if res:
+                            matched_dict[target] = res
+                            print(
+                                f"  └─ 🟢 [二次核實成功] 補抓到目標：{target} "
+                                f"-> {res['f_num']} ({res['route']})"
+                            )
+                    except Exception:
+                        pass
+
+            time.sleep(1)
+
+    # === 最終統計與推播 ===
     taiwan_arrivals = [
         f for f in matched_dict.values()
         if f["is_taiwan_dest"]
@@ -433,7 +466,7 @@ def main():
     print(
         f"\n📊 掃描結果總結：\n"
         f" • 監控目標數：{len(TARGETS)} 架\n"
-        f" • 成功抓到（系統/空中）：{len(matched_dict)} 架\n"
+        f" • 成功定位（系統/空中）：{len(matched_dict)} 架\n"
         f" • 🛬 預計/已降落台灣：{len(taiwan_arrivals)} 架\n"
         f" • ❌ 未在空中/無資料：{final_unmatched} 架"
     )
