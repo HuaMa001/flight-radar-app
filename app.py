@@ -126,7 +126,7 @@ def fetch_planespotters_image(registration: str) -> str | None:
 
 
 def fetch_direct_clickhandler(flight_obj_or_id) -> dict | None:
-    """索取詳細飛行狀態、起降機場資訊、抵達時間與飛機圖片"""
+    """索取詳細飛行狀態、起降機場資訊、起飛/抵達時間與飛機圖片"""
     try:
         if hasattr(flight_obj_or_id, "id"):
             details = fr_api.get_flight_details(flight_obj_or_id)
@@ -188,13 +188,20 @@ def fetch_direct_clickhandler(flight_obj_or_id) -> dict | None:
         f_reg = ac.get("registration") or "未知"
         ac_code = (ac.get("model") or {}).get("code") or "未知"
 
-        # 抓取抵達時間
+        # 抓取起飛與抵達時間
         time_data = details.get("time") or {}
-        sta_ts = (time_data.get("scheduled") or {}).get("arrival")
-        eta_ts = (time_data.get("estimated") or {}).get("arrival")
-        ata_ts = (time_data.get("real") or {}).get("arrival")
+        
+        # 起飛時間 (實際 -> 預計 -> 排定)
+        atd_dep = (time_data.get("real") or {}).get("departure")
+        etd_dep = (time_data.get("estimated") or {}).get("departure")
+        std_dep = (time_data.get("scheduled") or {}).get("departure")
+        dep_full = format_full_datetime(atd_dep or etd_dep or std_dep)
 
-        eta_full = format_full_datetime(eta_ts or ata_ts or sta_ts)
+        # 抵達時間 (實際 -> 預計 -> 排定)
+        ata_arr = (time_data.get("real") or {}).get("arrival")
+        eta_arr = (time_data.get("estimated") or {}).get("arrival")
+        sta_arr = (time_data.get("scheduled") or {}).get("arrival")
+        eta_full = format_full_datetime(ata_arr or eta_arr or sta_arr)
 
         # 照片抓取邏輯
         image_url = None
@@ -217,6 +224,7 @@ def fetch_direct_clickhandler(flight_obj_or_id) -> dict | None:
             "f_num": f_num,
             "f_reg": f_reg,
             "ac_code": ac_code,
+            "dep_time": dep_full,
             "eta_time": eta_full,
             "image_url": image_url,
         }
@@ -225,7 +233,7 @@ def fetch_direct_clickhandler(flight_obj_or_id) -> dict | None:
 
 
 def search_single_target_worker(target_raw: str, all_flights: list) -> dict | None:
-    """單目標查詢 Worker (新增起飛/降落台灣雙重判斷)"""
+    """單目標查詢 Worker (包含起飛/降落台灣判斷與起飛時間)"""
     target_clean = target_raw.replace("-", "")
 
     flight_map_by_id = {
@@ -264,6 +272,7 @@ def search_single_target_worker(target_raw: str, all_flights: list) -> dict | No
                     "機身註冊號": details["f_reg"] if details["f_reg"] != "未知" else (f_reg or target_raw),
                     "機型": details["ac_code"],
                     "航線 (出發➔到達)": f"{origin} ➔ {destination}",
+                    "起飛時間 (UTC+8)": details["dep_time"],
                     "預計抵達 (UTC+8)": details["eta_time"],
                     "高度 (ft)": details["alt"],
                     "地速 (kts)": details["spd"],
@@ -306,6 +315,7 @@ def search_single_target_worker(target_raw: str, all_flights: list) -> dict | No
                                 "機身註冊號": details["f_reg"] if details["f_reg"] != "未知" else target_raw,
                                 "機型": details["ac_code"],
                                 "航線 (出發➔到達)": f"{origin} ➔ {destination}",
+                                "起飛時間 (UTC+8)": details["dep_time"],
                                 "預計抵達 (UTC+8)": details["eta_time"],
                                 "高度 (ft)": details["alt"],
                                 "地速 (kts)": details["spd"],
@@ -334,7 +344,7 @@ default_text_value = "\n".join(DEFAULT_TARGETS)
 
 with st.sidebar:
     st.header("⚙️ 監控清單")
-    
+
     if DEFAULT_TARGETS:
         st.caption(f"📁 已從 `targets.txt` 載入 {len(DEFAULT_TARGETS)} 架預設目標")
     else:
@@ -346,7 +356,7 @@ with st.sidebar:
         "飛機代碼清單 (每行一班)",
         value=default_text_value,
         height=280,
-        placeholder="請輸入機號（每行一個，例如：\nB-KQU\nB-LRJ\nHL7628）"
+        placeholder="請輸入機號（每行一個，例如：\nB-KQU\nB-LRJ\nHL7628）",
     )
 
     targets = [f.strip().upper() for f in flight_input.split("\n") if f.strip()]
@@ -530,7 +540,11 @@ if not df_matched.empty:
         detail_col1, detail_col2 = st.columns([1, 2])
         with detail_col1:
             if selected_row.get("機身照片"):
-                st.image(selected_row["機身照片"], caption=f"機身註冊號：{selected_row['機身註冊號']}", use_container_width=True)
+                st.image(
+                    selected_row["機身照片"],
+                    caption=f"機身註冊號：{selected_row['機身註冊號']}",
+                    use_container_width=True,
+                )
             else:
                 st.warning("📷 尚無此機身之公開照片庫資料")
 
@@ -540,6 +554,7 @@ if not df_matched.empty:
                 f"- **機身註冊號**：`{selected_row.get('機身註冊號', '未知')}`\n"
                 f"- **機型**：`{selected_row.get('機型', '未知')}`\n"
                 f"- **航線**：**{selected_row.get('航線 (出發➔到達)', '未知')}**\n"
+                f"- **起飛時間 (UTC+8)**：`{selected_row.get('起飛時間 (UTC+8)', '未知')}`\n"
                 f"- **預計抵達時間 (UTC+8)**：`{selected_row.get('預計抵達 (UTC+8)', '未知')}`\n"
                 f"- **即時高度/速度**：`{selected_row.get('高度 (ft)', 0)} ft` / `{selected_row.get('地速 (kts)', 0)} kts`\n"
                 f"- **台灣起降狀態**：{selected_row.get('起飛台灣', '否')} / {selected_row.get('降落台灣', '否')}"
@@ -567,6 +582,7 @@ if not df_matched.empty:
         "html": (
             "<b>✈️ {航班號}</b> ({機身註冊號})<br/>"
             "<b>📍 航線:</b> {航線 (出發➔到達)}<br/>"
+            "<b>🛫 起飛時間:</b> {起飛時間 (UTC+8)}<br/>"
             "<b>🕒 預計抵達:</b> {預計抵達 (UTC+8)}<br/>"
             "<b>🛩️ 機型:</b> {機型}<br/>"
             "<b>📏 高度:</b> {高度 (ft)} ft | <b>⚡ 地速:</b> {地速 (kts)} kts<br/>"
@@ -590,31 +606,4 @@ if not df_matched.empty:
         )
     )
 
-    st.subheader("🟢 在空中/飛行中航班詳細清單")
-    st.info("💡 **點擊下方表格任意航班，表格會自動載入照片、地圖會跳轉至飛機位置！**")
-
-    ordered_cols = [
-        "機身照片",
-        "起飛台灣",
-        "降落台灣",
-        "監控目標",
-        "航班號",
-        "機身註冊號",
-        "預計抵達 (UTC+8)",
-        "機型",
-        "航線 (出發➔到達)",
-        "資料來源",
-    ]
-
-    # 防禦機制：確保舊 Session 數據也能補齊欄位
-    for col in ordered_cols:
-        if col not in df_sorted.columns:
-            df_sorted[col] = "未知"
-
-    display_df = df_sorted[ordered_cols].copy()
-    display_df.insert(0, "編號", range(1, len(display_df) + 1))
-
-    matched_col_config = {
-        "編號": st.column_config.NumberColumn("編號", width=50, format="%d"),
-        "機身照片": st.column_config.ImageColumn("機身照片", help="飛機照片預覽"),
-        "起飛台灣": st.column_co
+    st
