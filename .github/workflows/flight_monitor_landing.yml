@@ -29,5 +29,5 @@ jobs:
         env:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD }}
           TARGET_PLANES: ${{ vars.TARGET_PLANES }} # 👈 關鍵：自動載入 GitHub Variables 的清單
-        run: python Bot.py
+        run: python BotLanding.py
         
