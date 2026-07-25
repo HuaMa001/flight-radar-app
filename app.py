@@ -316,7 +316,7 @@ def search_single_target_worker(target_raw: str, all_flights: list) -> dict | No
 
                             is_taiwan_dest = check_is_taiwan(destination)
                             # 從台灣起飛且起飛時間 <= 現在時間才標記
-                            is_taiwan_orig = check_is_taiwan(origin) and (dep_ts is not None and dep_ts <= now_ts)
+                            is_taiwan_orig = check_is_taiwan(origin) and (dep_ts is not None and dep_ts >= now_ts)
 
                             return {
                                 "監控目標": target_raw,
