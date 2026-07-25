@@ -600,4 +600,81 @@ if not df_matched.empty:
         ),
         "style": {
             "backgroundColor": "rgba(15, 23, 42, 0.90)",
-       
+            "color": "white",
+            "borderRadius": "8px",
+            "boxShadow": "0px 4px 12px rgba(0,0,0,0.4)",
+            "fontSize": "12px",
+        },
+    }
+
+    st.pydeck_chart(
+        pdk.Deck(
+            layers=[layer],
+            initial_view_state=view_state,
+            map_style="https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json",
+            tooltip=hover_tooltip,
+        )
+    )
+
+    st.subheader("🟢 在空中/飛行中航班詳細清單")
+    st.info("💡 **點擊下方表格任意航班，表格會自動載入照片、地圖會跳轉至飛機位置！**")
+
+    ordered_cols = [
+        "機身照片",
+        "台灣起飛",
+        "降落台灣",
+        "監控目標",
+        "航班號",
+        "機身註冊號",
+        "起飛時間 (UTC+8)",
+        "預計抵達 (UTC+8)",
+        "機型",
+        "航線 (出發➔到達)",
+        "資料來源",
+    ]
+
+    # 防禦機制：確保舊 Session 數據也能補齊欄位
+    for col in ordered_cols:
+        if col not in df_sorted.columns:
+            df_sorted[col] = "未知"
+
+    display_df = df_sorted[ordered_cols].copy()
+    display_df.insert(0, "編號", range(1, len(display_df) + 1))
+
+    matched_col_config = {
+        "編號": st.column_config.NumberColumn("編號", width=50, format="%d"),
+        "機身照片": st.column_config.ImageColumn("機身照片", width="small"),
+        "台灣起飛": st.column_config.TextColumn("台灣起飛", width="small"),
+        "降落台灣": st.column_config.TextColumn("降落台灣", width="small"),
+        "監控目標": st.column_config.TextColumn("監控目標", width="small"),
+        "航班號": st.column_config.TextColumn("航班號", width="small"),
+        "機身註冊號": st.column_config.TextColumn("機身註冊號", width="small"),
+        "起飛時間 (UTC+8)": st.column_config.TextColumn("起飛時間 (UTC+8)", width="medium"),
+        "預計抵達 (UTC+8)": st.column_config.TextColumn("預計抵達 (UTC+8)", width="medium"),
+        "機型": st.column_config.TextColumn("機型", width="small"),
+        "航線 (出發➔到達)": st.column_config.TextColumn("航線 (出發➔到達)", width="medium"),
+        "資料來源": st.column_config.TextColumn("資料來源", width="small"),
+    }
+
+    st.dataframe(
+        display_df,
+        column_config=matched_col_config,
+        use_container_width=True,
+        hide_index=True,
+        on_select="rerun",
+        selection_mode="single-row",
+        key="flight_table",
+    )
+
+# --- 2. 未查到航班清單 ---
+if unmatched_targets:
+    st.subheader("🔴 未查到 / 尚未起飛目標")
+    st.caption("以下監控目標目前未在空中廣播訊號中偵測到，可能尚未起飛、已降落或暫無訊號：")
+    df_unmatched = pd.DataFrame(
+        {
+            "編號": range(1, len(unmatched_targets) + 1),
+            "監控目標代碼": unmatched_targets,
+            "狀態": ["🔴 尚未起飛 / 暫無訊號"] * len(unmatched_targets),
+        }
+    )
+    st.dataframe(df_unmatched, use_container_width=True, hide_index=True)
