@@ -194,7 +194,7 @@ def fetch_direct_clickhandler(fr_api_inst, flight_obj_or_id) -> dict | None:
         return None
 
 
-def search_single_target(target_raw: str, all_flights: list, flight_map_by_id: dict, fr_api_inst) -> dict | None:
+def search_single_target(target_raw: str, all_flights: list, flight_map_by_id: dict, fr_api_inst, is_retry: bool = False) -> dict | None:
     """單目標搜尋 Worker"""
     target_clean = target_raw.replace("-", "")
 
@@ -229,12 +229,13 @@ def search_single_target(target_raw: str, all_flights: list, flight_map_by_id: d
                     "source": "📡 直播廣播",
                 }
 
-    # 階段 2：Web API 反查（降低併發間隔）
-    time.sleep(random.uniform(0.05, 0.15))
+    # 階段 2：Web API 反查（若為二次核實，增加隨機間隔避免觸發限制）
+    delay = random.uniform(0.3, 0.6) if is_retry else random.uniform(0.05, 0.15)
+    time.sleep(delay)
     search_url = f"https://www.flightradar24.com/v1/search/web/find?query={target_raw}"
 
     try:
-        res = http_session.get(search_url, headers=get_headers(), timeout=4)
+        res = http_session.get(search_url, headers=get_headers(), timeout=5)
         if res.status_code == 200:
             results = sorted(
                 res.json().get("results", []),
@@ -279,7 +280,7 @@ def send_discord_webhook(taiwan_flights: list):
     for f in taiwan_flights:
         embed = {
             "title": f"🚨 彩繪機降落台灣警報：{f['f_num']}",
-            "color": 15158332,  # 紅/橘色提醒降落
+            "color": 15158332,
             "fields": [
                 {"name": "機身註冊號", "value": f"`{f['f_reg']}` ({f['ac_code']})", "inline": True},
                 {"name": "航線狀況", "value": f"📍 **{f['route']}**", "inline": True},
@@ -311,18 +312,18 @@ def main():
         print("🛑 沒有偵測到任何監控目標，程式結束。")
         return
 
-    # 設定最大並行線程數
     MAX_WORKERS = min(10, os.cpu_count() * 2 if os.cpu_count() else 8)
     print(f"🚀 開始監控 {len(TARGETS)} 架目標航班（開啟 {MAX_WORKERS} 線程加速）...")
 
     fr_api_inst = FlightRadar24API()
     matched_dict = {}
 
-    stable_threshold = 20
+    stable_threshold = 15
     last_unmatched_count = -1
     stable_counter = 0
     current_round = 0
 
+    # 第一階段：快速輪詢掃描
     while True:
         current_round += 1
         pending_targets = [t for t in TARGETS if t not in matched_dict]
@@ -340,8 +341,8 @@ def main():
 
         if stable_counter >= stable_threshold:
             print(
-                f"\n✅ 數據已穩定！未查到數量連續 {stable_threshold} 輪維持在 "
-                f"{current_unmatched_count} 架，結束輪詢。"
+                f"\n✅ 第一階段數據已穩定！未查到數量連續 {stable_threshold} 輪維持在 "
+                f"{current_unmatched_count} 架，準備進行未查到目標核實。"
             )
             break
 
@@ -359,7 +360,6 @@ def main():
             getattr(f, "id", ""): f for f in snapshot if getattr(f, "id", "")
         }
 
-        # ⚡ 多線程並行查詢
         with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
             future_to_target = {
                 executor.submit(
@@ -378,23 +378,64 @@ def main():
                             f"  └─ 🟢 [第 {current_round:02d} 輪] 抓到目標：{target} "
                             f"-> {res['f_num']} ({res['route']})"
                         )
-                except Exception as e:
+                except Exception:
                     pass
 
         time.sleep(0.5)
 
-    # 篩選條件：目的地為台灣
+    # 第二階段：二次冷卻核實（針對仍未查到的飛機）
+    unmatched_targets = [t for t in TARGETS if t not in matched_dict]
+    if unmatched_targets:
+        RETRY_WAIT_SEC = 15
+        print(f"\n⏳ 進入二次核實階段... 暫停 {RETRY_WAIT_SEC} 秒以解除 API 頻率限制（剩餘未查到：{len(unmatched_targets)} 架）")
+        time.sleep(RETRY_WAIT_SEC)
+
+        print("🔍 正在進行二次深度核實掃描...")
+        try:
+            snapshot = fr_api_inst.get_flights() or []
+        except Exception:
+            snapshot = []
+
+        flight_map_by_id = {
+            getattr(f, "id", ""): f for f in snapshot if getattr(f, "id", "")
+        }
+
+        # 二次核實降低線程數以確保穩定
+        with ThreadPoolExecutor(max_workers=4) as executor:
+            future_to_target = {
+                executor.submit(
+                    search_single_target, target, snapshot, flight_map_by_id, fr_api_inst, True
+                ): target
+                for target in unmatched_targets
+            }
+
+            for future in as_completed(future_to_target):
+                target = future_to_target[future]
+                try:
+                    res = future.result()
+                    if res:
+                        matched_dict[target] = res
+                        print(
+                            f"  └─ 🟢 [二次核實成功] 補抓到目標：{target} "
+                            f"-> {res['f_num']} ({res['route']})"
+                        )
+                except Exception:
+                    pass
+
+    # 最終統計與推播
     taiwan_arrivals = [
         f for f in matched_dict.values()
         if f["is_taiwan_dest"]
     ]
 
+    final_unmatched = len(TARGETS) - len(matched_dict)
+
     print(
         f"\n📊 掃描結果總結：\n"
         f" • 監控目標數：{len(TARGETS)} 架\n"
-        f" • 在空中/系統中抓到：{len(matched_dict)} 架\n"
+        f" • 成功抓到（系統/空中）：{len(matched_dict)} 架\n"
         f" • 🛬 預計/已降落台灣：{len(taiwan_arrivals)} 架\n"
-        f" • 未在空中/無資料：{len(TARGETS) - len(matched_dict)} 架"
+        f" • ❌ 未在空中/無資料：{final_unmatched} 架"
     )
 
     if taiwan_arrivals:
