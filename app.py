@@ -191,13 +191,11 @@ def fetch_direct_clickhandler(flight_obj_or_id) -> dict | None:
         # 抓取起飛與抵達時間
         time_data = details.get("time") or {}
         
-        # 起飛時間 (實際 -> 預計 -> 排定)
         atd_dep = (time_data.get("real") or {}).get("departure")
         etd_dep = (time_data.get("estimated") or {}).get("departure")
         std_dep = (time_data.get("scheduled") or {}).get("departure")
         dep_full = format_full_datetime(atd_dep or etd_dep or std_dep)
 
-        # 抵達時間 (實際 -> 預計 -> 排定)
         ata_arr = (time_data.get("real") or {}).get("arrival")
         eta_arr = (time_data.get("estimated") or {}).get("arrival")
         sta_arr = (time_data.get("scheduled") or {}).get("arrival")
@@ -505,7 +503,15 @@ if taiwan_count > 0:
 
 st.divider()
 
-# --- 1. 在空中航班（地圖 + 表格 + 照片預覽） ---
+# --- 地圖與航班資訊區 ---
+st.subheader("🗺️ 飛機即時位置雷達地圖")
+
+# 預設地圖中心（當沒有飛機在空中時，定位至台灣）
+center_lat = 23.59
+center_lon = 121.0
+zoom_level = 5.0
+selected_row = None
+
 if not df_matched.empty:
     df_sorted = (
         df_matched.sort_values(
@@ -517,7 +523,6 @@ if not df_matched.empty:
     center_lat = df_matched["lat"].mean()
     center_lon = df_matched["lon"].mean()
     zoom_level = 2.2
-    selected_row = None
 
     if (
         "flight_table" in st.session_state
@@ -531,8 +536,6 @@ if not df_matched.empty:
                 center_lat = selected_row["lat"]
                 center_lon = selected_row["lon"]
                 zoom_level = 7.5
-
-    st.subheader("🗺️ 飛機即時位置雷達地圖")
 
     if selected_row is not None:
         st.info(f"🎯 **已定位至航班：{selected_row['航班號']} ({selected_row['機身註冊號']})**")
@@ -561,49 +564,52 @@ if not df_matched.empty:
             )
         st.divider()
 
-    layer = pdk.Layer(
-        "ScatterplotLayer",
-        data=df_matched,
-        get_position=["lon", "lat"],
-        get_color="[230, 57, 70, 220]",
-        get_radius=60000,
-        pickable=True,
-        auto_highlight=True,
+layer = pdk.Layer(
+    "ScatterplotLayer",
+    data=df_matched if not df_matched.empty else pd.DataFrame(),
+    get_position=["lon", "lat"],
+    get_color="[230, 57, 70, 220]",
+    get_radius=60000,
+    pickable=True,
+    auto_highlight=True,
+)
+
+view_state = pdk.ViewState(
+    latitude=center_lat,
+    longitude=center_lon,
+    zoom=zoom_level,
+    pitch=0,
+)
+
+hover_tooltip = {
+    "html": (
+        "<b>✈️ {航班號}</b> ({機身註冊號})<br/>"
+        "<b>📍 航線:</b> {航線 (出發➔到達)}<br/>"
+        "<b>🛫 起飛時間:</b> {起飛時間 (UTC+8)}<br/>"
+        "<b>🕒 預計抵達:</b> {預計抵達 (UTC+8)}<br/>"
+        "<b>🛩️ 機型:</b> {機型}<br/>"
+        "<b>📏 高度:</b> {高度 (ft)} ft | <b>⚡ 地速:</b> {地速 (kts)} kts<br/>"
+        "<b>🇹🇼 台灣起降:</b> 起飛: {起飛台灣} | 降落: {降落台灣}"
+    ),
+    "style": {
+        "backgroundColor": "rgba(15, 23, 42, 0.90)",
+        "color": "white",
+        "borderRadius": "8px",
+        "boxShadow": "0px 4px 12px rgba(0,0,0,0.4)",
+        "fontSize": "12px",
+    },
+}
+
+st.pydeck_chart(
+    pdk.Deck(
+        layers=[layer],
+        initial_view_state=view_state,
+        map_style="https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json",
+        tooltip=hover_tooltip if not df_matched.empty else None,
     )
+)
 
-    view_state = pdk.ViewState(
-        latitude=center_lat,
-        longitude=center_lon,
-        zoom=zoom_level,
-        pitch=0,
-    )
+st.subheader("🟢 在空中/飛行中航班詳細清單")
 
-    hover_tooltip = {
-        "html": (
-            "<b>✈️ {航班號}</b> ({機身註冊號})<br/>"
-            "<b>📍 航線:</b> {航線 (出發➔到達)}<br/>"
-            "<b>🛫 起飛時間:</b> {起飛時間 (UTC+8)}<br/>"
-            "<b>🕒 預計抵達:</b> {預計抵達 (UTC+8)}<br/>"
-            "<b>🛩️ 機型:</b> {機型}<br/>"
-            "<b>📏 高度:</b> {高度 (ft)} ft | <b>⚡ 地速:</b> {地速 (kts)} kts<br/>"
-            "<b>🇹🇼 台灣起降:</b> 起飛: {起飛台灣} | 降落: {降落台灣}"
-        ),
-        "style": {
-            "backgroundColor": "rgba(15, 23, 42, 0.90)",
-            "color": "white",
-            "borderRadius": "8px",
-            "boxShadow": "0px 4px 12px rgba(0,0,0,0.4)",
-            "fontSize": "12px",
-        },
-    }
-
-    st.pydeck_chart(
-        pdk.Deck(
-            layers=[layer],
-            initial_view_state=view_state,
-            map_style="https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json",
-            tooltip=hover_tooltip,
-        )
-    )
-
-    st
+if not df_matched.empty:
+    st.info("💡 **點擊下方表格任意航班，表格會自動載入照片、
