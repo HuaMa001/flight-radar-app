@@ -1,6 +1,7 @@
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta, timezone
 import os
+import random
 import time
 import pandas as pd
 import pydeck as pdk
@@ -38,6 +39,8 @@ def fetch_all_active_flights():
 @st.cache_resource
 def get_http_session():
     session = requests.Session()
+    adapter = requests.adapters.HTTPAdapter(pool_connections=20, pool_maxsize=20)
+    session.mount("https://", adapter)
     session.headers.update({
         "User-Agent": (
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -45,6 +48,8 @@ def get_http_session():
             "Chrome/124.0.0.0 Safari/537.36"
         ),
         "Accept": "application/json, text/plain, */*",
+        "Referer": "https://www.flightradar24.com/",
+        "Origin": "https://www.flightradar24.com",
     })
     return session
 
@@ -92,10 +97,7 @@ def check_is_taiwan(text_or_code: str) -> bool:
         "RCTP", "RCSS", "RCKH", "RCMQ", "RCNN", "RCHU", "RCFG", "RCBS", "RCFN", "RCKW", "RCMT", "RCLY"
     }
 
-    if s in tw_airport_codes:
-        return True
-
-    if len(s) == 4 and s.startswith("RC"):
+    if s in tw_airport_codes or (len(s) == 4 and s.startswith("RC")):
         return True
 
     tw_name_keywords = [
@@ -111,7 +113,7 @@ def fetch_planespotters_image(registration: str) -> str | None:
         return None
     try:
         url = f"https://api.planespotters.net/pub/photos/reg/{registration}"
-        res = http_session.get(url, timeout=4)
+        res = http_session.get(url, timeout=3)
         if res.status_code == 200:
             data = res.json()
             photos = data.get("photos", [])
@@ -190,19 +192,20 @@ def fetch_direct_clickhandler(flight_obj_or_id) -> dict | None:
 
         # 抓取起飛與抵達時間
         time_data = details.get("time") or {}
-        
-        # 起飛時間 (實際 ATD -> 預計 ETD -> 排定 STD)
+
+        # 起飛時間 (預計 ETD -> 排定 STD -> 實際 ATD)
         std_ts = (time_data.get("scheduled") or {}).get("departure")
         etd_ts = (time_data.get("estimated") or {}).get("departure")
         atd_ts = (time_data.get("real") or {}).get("departure")
-        dep_ts = atd_ts or etd_ts or std_ts
+        dep_ts = etd_ts or std_ts or atd_ts
         dep_full = format_full_datetime(dep_ts)
 
         # 抵達時間 (預計 ETA -> 實際 ATA -> 排定 STA)
         sta_ts = (time_data.get("scheduled") or {}).get("arrival")
         eta_ts = (time_data.get("estimated") or {}).get("arrival")
         ata_ts = (time_data.get("real") or {}).get("arrival")
-        eta_full = format_full_datetime(eta_ts or ata_ts or sta_ts)
+        arr_ts = eta_ts or ata_ts or sta_ts
+        eta_full = format_full_datetime(arr_ts)
 
         # 照片抓取邏輯
         image_url = None
@@ -227,6 +230,7 @@ def fetch_direct_clickhandler(flight_obj_or_id) -> dict | None:
             "ac_code": ac_code,
             "dep_ts": dep_ts,
             "dep_time": dep_full,
+            "arr_ts": arr_ts,
             "eta_time": eta_full,
             "image_url": image_url,
         }
@@ -234,17 +238,17 @@ def fetch_direct_clickhandler(flight_obj_or_id) -> dict | None:
         return None
 
 
-def search_single_target_worker(target_raw: str, all_flights: list) -> dict | None:
+def search_single_target_worker(
+    target_raw: str,
+    all_flights: list,
+    flight_map_by_id: dict,
+    is_retry: bool = False
+) -> dict | None:
     """單目標查詢 Worker"""
     target_clean = target_raw.replace("-", "")
-
-    flight_map_by_id = {
-        getattr(f, "id", ""): f for f in all_flights if getattr(f, "id", "")
-    }
-
     now_ts = int(time.time())
 
-    # 1. 廣播數據比對
+    # 階段 1：直播廣播數據記憶體快速比對
     for flight in all_flights:
         f_num = (getattr(flight, "number", "") or "").upper()
         f_callsign = (getattr(flight, "callsign", "") or "").upper()
@@ -268,8 +272,8 @@ def search_single_target_worker(target_raw: str, all_flights: list) -> dict | No
                 dep_ts = details.get("dep_ts")
 
                 is_taiwan_dest = check_is_taiwan(destination)
-                # 從台灣起飛且起飛時間 <= 現在時間才標記
-                is_taiwan_orig = check_is_taiwan(origin) and (dep_ts is not None and dep_ts >= now_ts)
+                # 台灣起飛：起飛地為台灣 + 起飛時間 > 目前時間 (尚未起飛)
+                is_taiwan_orig = check_is_taiwan(origin) and (dep_ts is not None and dep_ts > now_ts)
 
                 return {
                     "監控目標": target_raw,
@@ -292,11 +296,13 @@ def search_single_target_worker(target_raw: str, all_flights: list) -> dict | No
                     "_is_taiwan": is_taiwan_orig or is_taiwan_dest,
                 }
 
-    # 2. 線上反查
+    # 階段 2：Web API 詳細反查 (二次核實時給予較長的防鎖延遲)
+    delay = random.uniform(0.2, 0.4) if is_retry else random.uniform(0.05, 0.15)
+    time.sleep(delay)
     search_url = f"https://www.flightradar24.com/v1/search/web/find?query={target_raw}"
 
     try:
-        res = http_session.get(search_url, timeout=4)
+        res = http_session.get(search_url, timeout=5)
         if res.status_code == 200:
             results = sorted(
                 res.json().get("results", []),
@@ -315,8 +321,7 @@ def search_single_target_worker(target_raw: str, all_flights: list) -> dict | No
                             dep_ts = details.get("dep_ts")
 
                             is_taiwan_dest = check_is_taiwan(destination)
-                            # 從台灣起飛且起飛時間 <= 現在時間才標記
-                            is_taiwan_orig = check_is_taiwan(origin) and (dep_ts is not None and dep_ts >= now_ts)
+                            is_taiwan_orig = check_is_taiwan(origin) and (dep_ts is not None and dep_ts > now_ts)
 
                             return {
                                 "監控目標": target_raw,
@@ -345,7 +350,7 @@ def search_single_target_worker(target_raw: str, all_flights: list) -> dict | No
 
 
 # --- 3. UI 介面與側邊欄設定 ---
-st.title("✈️ FlightRadar24 彩繪機降落台灣監測")
+st.title("✈️ FlightRadar24 彩繪機台灣起降監測")
 
 if "matched_dict" not in st.session_state:
     st.session_state["matched_dict"] = {}
@@ -356,7 +361,7 @@ default_text_value = "\n".join(DEFAULT_TARGETS)
 
 with st.sidebar:
     st.header("⚙️ 監控清單")
-    
+
     if DEFAULT_TARGETS:
         st.caption(f"📁 已從 `targets.txt` 載入 {len(DEFAULT_TARGETS)} 架預設目標")
     else:
@@ -386,19 +391,21 @@ with st.sidebar:
 
     unmatched_count = len(currently_unmatched)
     rescan_unmatched = st.button(
-        f"⚡ 併行輪詢補查「未查到」 ({unmatched_count} 架)",
+        f"⚡ 二次深層核實「未查到」 ({unmatched_count} 架)",
         type="secondary",
         use_container_width=True,
         disabled=(unmatched_count == 0),
     )
 
 
-# 多執行緒輪詢邏輯
+# === 雙階段完整輪詢邏輯 ===
 def run_scan_process_until_stable(
     all_targets: list[str],
     is_full_rescan: bool = False,
-    stable_threshold: int = 10,
-    max_workers: int = 8,
+    stable_threshold_phase1: int = 15,
+    stable_threshold_phase2: int = 10,
+    max_workers_p1: int = 8,
+    max_workers_p2: int = 4,
 ):
     if is_full_rescan:
         st.session_state["matched_dict"] = {}
@@ -406,6 +413,7 @@ def run_scan_process_until_stable(
     status_info = st.empty()
     progress_bar = st.progress(0)
 
+    # ==================== 【第一階段：高速併行掃描】 ====================
     last_unmatched_count = -1
     stable_counter = 0
     current_round = 0
@@ -417,7 +425,7 @@ def run_scan_process_until_stable(
         current_unmatched_count = len(pending_targets)
 
         if current_unmatched_count == 0:
-            status_info.success("🎉 所有監控目標皆已成功定位！")
+            status_info.success("🎉 第一階段：所有監控目標皆已成功定位！")
             break
 
         if current_unmatched_count == last_unmatched_count:
@@ -426,29 +434,32 @@ def run_scan_process_until_stable(
             stable_counter = 1
             last_unmatched_count = current_unmatched_count
 
-        if stable_counter >= stable_threshold:
+        if stable_counter >= stable_threshold_phase1:
             status_info.success(
-                f"✅ 未查到數量已連續 {stable_threshold} 輪維持在 "
-                f"{current_unmatched_count} 架，數據已達穩定狀態！"
+                f"✅ 第一階段數據已穩定！未查到數量連續 {stable_threshold_phase1} 輪維持在 "
+                f"{current_unmatched_count} 架。"
             )
             time.sleep(1)
             break
 
         status_info.info(
-            f"⚡ [併行加速中] 第 {current_round} 輪掃描... "
-            f"（剩餘未查到：{current_unmatched_count} 架 | 穩定進度：{stable_counter}/{stable_threshold}）"
+            f"⚡ [第一階段] 第 {current_round:02d} 輪高速掃描... "
+            f"（剩餘未查到：{current_unmatched_count} 架 | 穩定進度：{stable_counter}/{stable_threshold_phase1}）"
         )
 
         fetch_all_active_flights.clear()
         snapshot = fetch_all_active_flights()
+        flight_map_by_id = {
+            getattr(f, "id", ""): f for f in snapshot if getattr(f, "id", "")
+        }
 
         total_pending = len(pending_targets)
         completed_count = 0
 
-        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        with ThreadPoolExecutor(max_workers=max_workers_p1) as executor:
             future_to_target = {
                 executor.submit(
-                    search_single_target_worker, target, snapshot
+                    search_single_target_worker, target, snapshot, flight_map_by_id, False
                 ): target
                 for target in pending_targets
             }
@@ -465,7 +476,83 @@ def run_scan_process_until_stable(
                 completed_count += 1
                 progress_bar.progress(completed_count / total_pending)
 
-        time.sleep(0.3)
+        time.sleep(0.5)
+
+    # ==================== 【第二階段：未查到目標二次深層核實】 ====================
+    unmatched_after_p1 = [t for t in all_targets if t not in st.session_state["matched_dict"]]
+
+    if unmatched_after_p1:
+        # 冷卻倒數提示 10 秒
+        for delay_sec in range(10, 0, -1):
+            status_info.warning(
+                f"⏳ 準備進入二次深度核實階段... 暫停倒數 {delay_sec} 秒以解除 API 頻率限制"
+                f"（剩餘未查到：{len(unmatched_after_p1)} 架）"
+            )
+            time.sleep(1)
+
+        retry_last_unmatched = -1
+        retry_stable_counter = 0
+        retry_round = 0
+
+        while True:
+            retry_round += 1
+            matched_keys = set(st.session_state["matched_dict"].keys())
+            retry_pending = [t for t in all_targets if t not in matched_keys]
+            retry_unmatched_count = len(retry_pending)
+
+            if retry_unmatched_count == 0:
+                status_info.success("🎉 二次核實：所有剩餘目標皆已全數定位補齊！")
+                break
+
+            if retry_unmatched_count == retry_last_unmatched:
+                retry_stable_counter += 1
+            else:
+                retry_stable_counter = 1
+                retry_last_unmatched = retry_unmatched_count
+
+            if retry_stable_counter >= stable_threshold_phase2:
+                status_info.success(
+                    f"✅ 二次核實數據已完全穩定！未查到數量連續 {stable_threshold_phase2} 輪維持在 "
+                    f"{retry_unmatched_count} 架，結束核實。"
+                )
+                time.sleep(1)
+                break
+
+            status_info.info(
+                f"🔍 [二次核實] 第 {retry_round:02d} 輪深度掃描... "
+                f"（剩餘未查：{retry_unmatched_count} 架 | 穩定進度：{retry_stable_counter}/{stable_threshold_phase2}）"
+            )
+
+            fetch_all_active_flights.clear()
+            snapshot = fetch_all_active_flights()
+            flight_map_by_id = {
+                getattr(f, "id", ""): f for f in snapshot if getattr(f, "id", "")
+            }
+
+            total_pending = len(retry_pending)
+            completed_count = 0
+
+            with ThreadPoolExecutor(max_workers=max_workers_p2) as executor:
+                future_to_target = {
+                    executor.submit(
+                        search_single_target_worker, target, snapshot, flight_map_by_id, True
+                    ): target
+                    for target in retry_pending
+                }
+
+                for future in as_completed(future_to_target):
+                    target = future_to_target[future]
+                    try:
+                        res = future.result()
+                        if res:
+                            st.session_state["matched_dict"][target] = res
+                    except Exception:
+                        pass
+
+                    completed_count += 1
+                    progress_bar.progress(completed_count / total_pending)
+
+            time.sleep(1.0)
 
     progress_bar.empty()
     status_info.empty()
@@ -515,14 +602,14 @@ taiwan_orig_count = (
 col1, col2, col3, col4, col5 = st.columns(5)
 col1.metric("監控目標總數", f"{len(targets)} 架")
 col2.metric("在空中 / 飛行中", f"{len(df_matched)} 架")
-col3.metric("🛫 台灣起飛", f"{taiwan_orig_count} 架")
+col3.metric("🛫 台灣起飛 (未起飛)", f"{taiwan_orig_count} 架")
 col4.metric("🇹🇼 降落台灣", f"{taiwan_dest_count} 架")
-col5.metric("未查到 / 尚未起飛", f"{len(unmatched_targets)} 架")
+col5.metric("未查到 / 無資料", f"{len(unmatched_targets)} 架")
 
 if taiwan_dest_count > 0 or taiwan_orig_count > 0:
     st.success(
         f"### 🇹🇼 即時警報：共有 **{taiwan_dest_count}** 架預計/已降落台灣，"
-        f"**{taiwan_orig_count}** 架已從台灣起飛！"
+        f"**{taiwan_orig_count}** 架預計自台灣起飛！"
     )
 
 st.divider()
@@ -537,13 +624,13 @@ if not df_matched.empty:
         .reset_index(drop=True)
     )
 
-    # 地圖圓點顏色計算 (已起飛的台灣航班:綠色, 降落台灣:紅色, 其他:灰色)
+    # 地圖圓點顏色計算 (台灣起飛:綠色, 降落台灣:紅色, 其他:灰色)
     def assign_marker_color(row):
         if row.get("_is_taiwan_orig"):
-            return [46, 204, 113, 230]  # 🟢 綠色 (已從台灣起飛)
+            return [46, 204, 113, 230]   # 🟢 綠色 (預計台灣起飛)
         elif row.get("_is_taiwan_dest"):
-            return [230, 57, 70, 230]   # 🔴 紅色 (降落台灣)
-        return [148, 163, 184, 200]     # 🩶 灰色
+            return [230, 57, 70, 230]    # 🔴 紅色 (降落台灣)
+        return [148, 163, 184, 200]      # 🩶 灰色
 
     df_matched["marker_color"] = df_matched.apply(assign_marker_color, axis=1)
 
@@ -637,7 +724,7 @@ if not df_matched.empty:
     )
 
     st.subheader("🟢 在空中/飛行中航班詳細清單")
-    st.info("💡 **綠色底代表已從台灣起飛航班** | 點擊表格任意航班可於上方查看照片與地圖定位")
+    st.info("💡 **綠色底代表預計自台灣起飛航班** | 點擊表格任意航班可於上方查看照片與地圖定位")
 
     ordered_cols = [
         "機身照片",
@@ -653,7 +740,6 @@ if not df_matched.empty:
         "資料來源",
     ]
 
-    # 防禦機制：確保舊 Session 數據也能補齊欄位
     for col in ordered_cols:
         if col not in df_sorted.columns:
             df_sorted[col] = "未知"
@@ -696,8 +782,8 @@ if not df_matched.empty:
 
 # --- 2. 未查到航班清單 ---
 if unmatched_targets:
-    st.subheader("🔴 未查到 / 尚未起飛目標")
-    st.caption("以下監控目標目前未在空中廣播訊號中偵測到，可能尚未起飛、已降落或暫無訊號：")
+    st.subheader("🔴 未查到 / 無資料目標")
+    st.caption("以下監控目標經歷雙階段穩定度核實後仍未在空中廣播訊號中偵測到：")
     df_unmatched = pd.DataFrame(
         {
             "編號": range(1, len(unmatched_targets) + 1),
