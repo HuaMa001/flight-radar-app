@@ -240,65 +240,55 @@ def fetch_direct_clickhandler(flight_obj_or_id) -> dict | None:
 
 def search_single_target_worker(
     target_raw: str,
-    all_flights: list,
+    broadcast_lookup: dict,
     flight_map_by_id: dict,
-    is_retry: bool = False
+    is_retry: bool = False,
 ) -> dict | None:
-    """單目標查詢 Worker"""
+    """單目標查詢 Worker (高極速 Hash Map 版)"""
     target_clean = target_raw.replace("-", "")
     now_ts = int(time.time())
 
-    # 階段 1：直播廣播數據記憶體快速比對
-    for flight in all_flights:
-        f_num = (getattr(flight, "number", "") or "").upper()
-        f_callsign = (getattr(flight, "callsign", "") or "").upper()
-        f_reg = (getattr(flight, "registration", "") or "").upper()
+    # 1. 廣播數據 Hash Map 快速比對 O(1) - 兩階段皆會比對
+    flight = broadcast_lookup.get(target_raw) or broadcast_lookup.get(target_clean)
 
-        f_num_c = f_num.replace("-", "")
-        f_callsign_c = f_callsign.replace("-", "")
-        f_reg_c = f_reg.replace("-", "")
+    if flight:
+        details = fetch_direct_clickhandler(flight)
+        if details:
+            origin = details["origin"]
+            destination = details["destination"]
+            dep_ts = details.get("dep_ts")
 
-        matched = target_raw in [f_num, f_callsign, f_reg] or target_clean in [
-            f_num_c,
-            f_callsign_c,
-            f_reg_c,
-        ]
+            is_taiwan_dest = check_is_taiwan(destination)
+            # 台灣起飛：起飛地為台灣 + 起飛時間 > 目前時間 (尚未起飛)
+            is_taiwan_orig = check_is_taiwan(origin) and (dep_ts is not None and dep_ts > now_ts)
 
-        if matched:
-            details = fetch_direct_clickhandler(flight)
-            if details:
-                origin = details["origin"]
-                destination = details["destination"]
-                dep_ts = details.get("dep_ts")
+            return {
+                "監控目標": target_raw,
+                "機身照片": details["image_url"],
+                "航班號": details["f_num"] if details["f_num"] != "未知" else target_raw,
+                "機身註冊號": details["f_reg"] if details["f_reg"] != "未知" else target_raw,
+                "機型": details["ac_code"],
+                "航線 (出發➔到達)": f"{origin} ➔ {destination}",
+                "起飛時間 (UTC+8)": details["dep_time"],
+                "預計抵達 (UTC+8)": details["eta_time"],
+                "高度 (ft)": details["alt"],
+                "地速 (kts)": details["spd"],
+                "台灣起飛": "🛫 台灣起飛" if is_taiwan_orig else "否",
+                "降落台灣": "🇹🇼 降落台灣" if is_taiwan_dest else "否",
+                "資料來源": "📡 直播廣播",
+                "lat": details["lat"],
+                "lon": details["lon"],
+                "_is_taiwan_orig": is_taiwan_orig,
+                "_is_taiwan_dest": is_taiwan_dest,
+                "_is_taiwan": is_taiwan_orig or is_taiwan_dest,
+            }
 
-                is_taiwan_dest = check_is_taiwan(destination)
-                # 台灣起飛：起飛地為台灣 + 起飛時間 > 目前時間 (尚未起飛)
-                is_taiwan_orig = check_is_taiwan(origin) and (dep_ts is not None and dep_ts > now_ts)
+    # 第一階段 (is_retry=False) 跳過 Web API 反查，極速完成一輪掃描
+    if not is_retry:
+        return None
 
-                return {
-                    "監控目標": target_raw,
-                    "機身照片": details["image_url"],
-                    "航班號": details["f_num"] if details["f_num"] != "未知" else (f_num or f_callsign),
-                    "機身註冊號": details["f_reg"] if details["f_reg"] != "未知" else (f_reg or target_raw),
-                    "機型": details["ac_code"],
-                    "航線 (出發➔到達)": f"{origin} ➔ {destination}",
-                    "起飛時間 (UTC+8)": details["dep_time"],
-                    "預計抵達 (UTC+8)": details["eta_time"],
-                    "高度 (ft)": details["alt"],
-                    "地速 (kts)": details["spd"],
-                    "台灣起飛": "🛫 台灣起飛" if is_taiwan_orig else "否",
-                    "降落台灣": "🇹🇼 降落台灣" if is_taiwan_dest else "否",
-                    "資料來源": "📡 直播廣播",
-                    "lat": details["lat"],
-                    "lon": details["lon"],
-                    "_is_taiwan_orig": is_taiwan_orig,
-                    "_is_taiwan_dest": is_taiwan_dest,
-                    "_is_taiwan": is_taiwan_orig or is_taiwan_dest,
-                }
-
-    # 階段 2：Web API 詳細反查 (二次核實時給予較長的防鎖延遲)
-    delay = random.uniform(0.2, 0.4) if is_retry else random.uniform(0.05, 0.15)
-    time.sleep(delay)
+    # 2. 僅在第二階段 (is_retry=True) 才發動 Web API 詳細反查
+    time.sleep(random.uniform(0.15, 0.35))
     search_url = f"https://www.flightradar24.com/v1/search/web/find?query={target_raw}"
 
     try:
@@ -398,11 +388,11 @@ with st.sidebar:
     )
 
 
-# === 雙階段完整輪詢邏輯 ===
+# === 雙階段完整輪詢邏輯 (極速優化版) ===
 def run_scan_process_until_stable(
     all_targets: list[str],
     is_full_rescan: bool = False,
-    stable_threshold_phase1: int = 10,
+    stable_threshold_phase1: int = 15,
     stable_threshold_phase2: int = 10,
     max_workers_p1: int = 8,
     max_workers_p2: int = 4,
@@ -413,7 +403,7 @@ def run_scan_process_until_stable(
     status_info = st.empty()
     progress_bar = st.progress(0)
 
-    # ==================== 【第一階段：高速併行掃描】 ====================
+    # ==================== 【第一階段：記憶體 Hash Map 極速併行掃描】 ====================
     last_unmatched_count = -1
     stable_counter = 0
     current_round = 0
@@ -443,15 +433,30 @@ def run_scan_process_until_stable(
             break
 
         status_info.info(
-            f"⚡ [第一階段] 第 {current_round:02d} 輪高速掃描... "
+            f"⚡ [第一階段] 第 {current_round:02d} 輪極速掃描... "
             f"（剩餘未查到：{current_unmatched_count} 架 | 穩定進度：{stable_counter}/{stable_threshold_phase1}）"
         )
 
         fetch_all_active_flights.clear()
         snapshot = fetch_all_active_flights()
-        flight_map_by_id = {
-            getattr(f, "id", ""): f for f in snapshot if getattr(f, "id", "")
-        }
+
+        # ⚡ 建立 Hash Map 索引 (提供 O(1) 極速比對)
+        flight_map_by_id = {}
+        broadcast_lookup = {}
+        for f in snapshot:
+            fid = getattr(f, "id", "")
+            if fid:
+                flight_map_by_id[fid] = f
+
+            for key in [
+                getattr(f, "number", ""),
+                getattr(f, "callsign", ""),
+                getattr(f, "registration", ""),
+            ]:
+                if key:
+                    k_str = str(key).upper().strip()
+                    broadcast_lookup[k_str] = f
+                    broadcast_lookup[k_str.replace("-", "")] = f
 
         total_pending = len(pending_targets)
         completed_count = 0
@@ -459,7 +464,7 @@ def run_scan_process_until_stable(
         with ThreadPoolExecutor(max_workers=max_workers_p1) as executor:
             future_to_target = {
                 executor.submit(
-                    search_single_target_worker, target, snapshot, flight_map_by_id, False
+                    search_single_target_worker, target, broadcast_lookup, flight_map_by_id, False
                 ): target
                 for target in pending_targets
             }
@@ -476,7 +481,7 @@ def run_scan_process_until_stable(
                 completed_count += 1
                 progress_bar.progress(completed_count / total_pending)
 
-        time.sleep(0.5)
+        time.sleep(0.1)
 
     # ==================== 【第二階段：未查到目標二次深層核實】 ====================
     unmatched_after_p1 = [t for t in all_targets if t not in st.session_state["matched_dict"]]
@@ -525,9 +530,23 @@ def run_scan_process_until_stable(
 
             fetch_all_active_flights.clear()
             snapshot = fetch_all_active_flights()
-            flight_map_by_id = {
-                getattr(f, "id", ""): f for f in snapshot if getattr(f, "id", "")
-            }
+
+            flight_map_by_id = {}
+            broadcast_lookup = {}
+            for f in snapshot:
+                fid = getattr(f, "id", "")
+                if fid:
+                    flight_map_by_id[fid] = f
+
+                for key in [
+                    getattr(f, "number", ""),
+                    getattr(f, "callsign", ""),
+                    getattr(f, "registration", ""),
+                ]:
+                    if key:
+                        k_str = str(key).upper().strip()
+                        broadcast_lookup[k_str] = f
+                        broadcast_lookup[k_str.replace("-", "")] = f
 
             total_pending = len(retry_pending)
             completed_count = 0
@@ -535,7 +554,7 @@ def run_scan_process_until_stable(
             with ThreadPoolExecutor(max_workers=max_workers_p2) as executor:
                 future_to_target = {
                     executor.submit(
-                        search_single_target_worker, target, snapshot, flight_map_by_id, True
+                        search_single_target_worker, target, broadcast_lookup, flight_map_by_id, True
                     ): target
                     for target in retry_pending
                 }
@@ -552,7 +571,7 @@ def run_scan_process_until_stable(
                     completed_count += 1
                     progress_bar.progress(completed_count / total_pending)
 
-            time.sleep(1.0)
+            time.sleep(0.8)
 
     progress_bar.empty()
     status_info.empty()
@@ -624,7 +643,7 @@ if not df_matched.empty:
         .reset_index(drop=True)
     )
 
-    # 地圖圓點顏色計算 (台灣起飛:綠色, 降落台灣:紅色, 其他:灰色)
+    # 地圖圓點顏色計算 (預計台灣起飛:綠色, 降落台灣:紅色, 其他:灰色)
     def assign_marker_color(row):
         if row.get("_is_taiwan_orig"):
             return [46, 204, 113, 230]   # 🟢 綠色 (預計台灣起飛)
@@ -724,7 +743,7 @@ if not df_matched.empty:
     )
 
     st.subheader("🟢 在空中/飛行中航班詳細清單")
-    st.info("💡 **綠色底代表預計自台灣起飛航班** | 點擊表格任意航班可於上方查看照片與地圖定位")
+    st.info("💡 **綠色底代表符合「台灣起飛」或「降落台灣」航班** | 點擊表格任意航班可於上方查看照片與地圖定位")
 
     ordered_cols = [
         "機身照片",
@@ -762,13 +781,15 @@ if not df_matched.empty:
         "資料來源": st.column_config.TextColumn("資料來源", width="small"),
     }
 
-    # 行高亮邏輯：台灣起飛套用綠色底樣式
-    def style_taiwan_orig_rows(row):
-        if row.get("台灣起飛") == "🛫 台灣起飛":
+    # ⚡ 修改處：只要「台灣起飛」或「降落台灣」符合其一，全列皆套用綠色高亮樣式
+    def style_taiwan_rows(row):
+        is_orig = row.get("台灣起飛") == "🛫 台灣起飛"
+        is_dest = row.get("降落台灣") == "🇹🇼 降落台灣"
+        if is_orig or is_dest:
             return ["background-color: #d4edda; color: #155724; font-weight: bold;"] * len(row)
         return [""] * len(row)
 
-    styled_df = display_df.style.apply(style_taiwan_orig_rows, axis=1)
+    styled_df = display_df.style.apply(style_taiwan_rows, axis=1)
 
     st.dataframe(
         styled_df,
