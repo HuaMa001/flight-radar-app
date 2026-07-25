@@ -390,7 +390,7 @@ def main():
         print(f"\n⏳ 進入二次核實階段... 暫停 {RETRY_WAIT_SEC} 秒以解除 API 頻率限制（剩餘未查到：{len(unmatched_targets)} 架）")
         time.sleep(RETRY_WAIT_SEC)
 
-        stable_threshold_phase2 = 5  # 二次核實需連續 5 輪數字穩定
+        stable_threshold_phase2 = 10  # 二次核實需連續 5 輪數字穩定
         retry_last_unmatched = -1
         retry_stable_counter = 0
         retry_round = 0
