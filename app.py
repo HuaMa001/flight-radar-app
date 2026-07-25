@@ -521,11 +521,21 @@ st.divider()
 if not df_matched.empty:
     df_sorted = (
         df_matched.sort_values(
-            by=["_is_taiwan_dest", "_is_taiwan_orig", "監控目標"],
+            by=["_is_taiwan_orig", "_is_taiwan_dest", "監控目標"],
             ascending=[False, False, True],
         )
         .reset_index(drop=True)
     )
+
+    # 地圖圓點顏色計算 (台灣起飛:綠色, 降落台灣:紅色, 其他:灰色)
+    def assign_marker_color(row):
+        if row.get("_is_taiwan_orig"):
+            return [46, 204, 113, 230]  # 🟢 綠色 (台灣起飛)
+        elif row.get("_is_taiwan_dest"):
+            return [230, 57, 70, 230]   # 🔴 紅色 (降落台灣)
+        return [148, 163, 184, 200]     # 🩶 灰色
+
+    df_matched["marker_color"] = df_matched.apply(assign_marker_color, axis=1)
 
     center_lat = df_matched["lat"].mean()
     center_lon = df_matched["lon"].mean()
@@ -575,7 +585,7 @@ if not df_matched.empty:
         "ScatterplotLayer",
         data=df_matched,
         get_position=["lon", "lat"],
-        get_color="[230, 57, 70, 220]",
+        get_color="marker_color",
         get_radius=60000,
         pickable=True,
         auto_highlight=True,
@@ -617,7 +627,7 @@ if not df_matched.empty:
     )
 
     st.subheader("🟢 在空中/飛行中航班詳細清單")
-    st.info("💡 **點擊下方表格任意航班，表格會自動載入照片、地圖會跳轉至飛機位置！**")
+    st.info("💡 **綠色底代表從台灣起飛航班** | 點擊表格任意航班可於上方查看照片與地圖定位")
 
     ordered_cols = [
         "機身照片",
@@ -656,8 +666,16 @@ if not df_matched.empty:
         "資料來源": st.column_config.TextColumn("資料來源", width="small"),
     }
 
+    # 行高亮邏輯：台灣起飛套用綠色底樣式
+    def style_taiwan_orig_rows(row):
+        if row.get("台灣起飛") == "🛫 台灣起飛":
+            return ["background-color: #d4edda; color: #155724; font-weight: bold;"] * len(row)
+        return [""] * len(row)
+
+    styled_df = display_df.style.apply(style_taiwan_orig_rows, axis=1)
+
     st.dataframe(
-        display_df,
+        styled_df,
         column_config=matched_col_config,
         use_container_width=True,
         hide_index=True,
