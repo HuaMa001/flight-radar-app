@@ -268,7 +268,7 @@ def search_single_target_worker(target_raw: str, all_flights: list) -> dict | No
                 dep_ts = details.get("dep_ts")
 
                 is_taiwan_dest = check_is_taiwan(destination)
-                # 從台灣起飛且起飛時間 <= 現在時間才標記
+                # 從台灣起飛且起飛時間 >= 現在時間才標記
                 is_taiwan_orig = check_is_taiwan(origin) and (dep_ts is not None and dep_ts >= now_ts)
 
                 return {
@@ -315,7 +315,7 @@ def search_single_target_worker(target_raw: str, all_flights: list) -> dict | No
                             dep_ts = details.get("dep_ts")
 
                             is_taiwan_dest = check_is_taiwan(destination)
-                            # 從台灣起飛且起飛時間 <= 現在時間才標記
+                            # 從台灣起飛且起飛時間 >= 現在時間才標記
                             is_taiwan_orig = check_is_taiwan(origin) and (dep_ts is not None and dep_ts >= now_ts)
 
                             return {
@@ -522,7 +522,7 @@ col5.metric("未查到 / 尚未起飛", f"{len(unmatched_targets)} 架")
 if taiwan_dest_count > 0 or taiwan_orig_count > 0:
     st.success(
         f"### 🇹🇼 即時警報：共有 **{taiwan_dest_count}** 架預計/已降落台灣，"
-        f"**{taiwan_orig_count}** 架已從台灣起飛！"
+        f"**{taiwan_orig_count}** 架預計從台灣起飛！"
     )
 
 st.divider()
@@ -537,10 +537,10 @@ if not df_matched.empty:
         .reset_index(drop=True)
     )
 
-    # 地圖圓點顏色計算 (已起飛的台灣航班:綠色, 降落台灣:紅色, 其他:灰色)
+    # 地圖圓點顏色計算 (已符合條件的台灣起飛航班:綠色, 降落台灣:紅色, 其他:灰色)
     def assign_marker_color(row):
         if row.get("_is_taiwan_orig"):
-            return [46, 204, 113, 230]  # 🟢 綠色 (已從台灣起飛)
+            return [46, 204, 113, 230]  # 🟢 綠色 (台灣起飛)
         elif row.get("_is_taiwan_dest"):
             return [230, 57, 70, 230]   # 🔴 紅色 (降落台灣)
         return [148, 163, 184, 200]     # 🩶 灰色
@@ -637,7 +637,7 @@ if not df_matched.empty:
     )
 
     st.subheader("🟢 在空中/飛行中航班詳細清單")
-    st.info("💡 **綠色底代表台灣起飛（已起飛）或降落台灣航班** | 點擊表格任意航班可於上方查看照片與地圖定位")
+    st.info("💡 **綠色底代表台灣起飛或降落台灣航班** | 點擊表格任意航班可於上方查看照片與地圖定位")
 
     ordered_cols = [
         "機身照片",
