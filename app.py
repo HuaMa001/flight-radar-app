@@ -676,11 +676,16 @@ if not df_matched.empty:
         "資料來源": st.column_config.TextColumn("資料來源", width="small"),
     }
 
-    # 行高亮邏輯：台灣起飛套用綠色底樣式
-    def style_taiwan_orig_rows(row):
-       if row.get("台灣起飛") == "🛫 台灣起飛" or row.get("降落台灣") == "🇹🇼 降落台灣":
-            return ["background-color: #d4edda; color: #155724; font-weight: bold;"] * len(row)
-        return [""] * len(row)
+    # 行高亮邏輯：台灣起飛 或 降落台灣 套用綠色底樣式
+def style_taiwan_rows(row):
+    is_orig = row.get("台灣起飛") == "🛫 台灣起飛"
+    is_dest = row.get("降落台灣") == "🇹🇼 降落台灣"
+    
+    if is_orig or is_dest:
+        return ["background-color: #d4edda; color: #155724; font-weight: bold;"] * len(row)
+    return [""] * len(row)
+
+styled_df = display_df.style.apply(style_taiwan_rows, axis=1)
 
     styled_df = display_df.style.apply(style_taiwan_orig_rows, axis=1)
 
