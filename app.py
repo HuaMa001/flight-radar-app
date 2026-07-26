@@ -678,7 +678,7 @@ if not df_matched.empty:
 
     # 行高亮邏輯：台灣起飛套用綠色底樣式
     def style_taiwan_orig_rows(row):
-        if row.get("台灣起飛") == "🛫 台灣起飛":
+       if row.get("台灣起飛") == "🛫 台灣起飛" or row.get("降落台灣") == "🇹🇼 降落台灣":
             return ["background-color: #d4edda; color: #155724; font-weight: bold;"] * len(row)
         return [""] * len(row)
 
