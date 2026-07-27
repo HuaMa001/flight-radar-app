@@ -125,6 +125,27 @@ def fetch_planespotters_image(registration: str) -> str | None:
     return None
 
 
+@st.cache_data(ttl=3600, show_spinner=False)
+def fetch_unmatched_images(unmatched_list: list[str]) -> dict[str, str | None]:
+    """併行批次抓取未查到目標的 Planespotters 照片並提供快取"""
+    results = {}
+    if not unmatched_list:
+        return results
+
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        future_to_target = {
+            executor.submit(fetch_planespotters_image, target): target
+            for target in unmatched_list
+        }
+        for future in as_completed(future_to_target):
+            target = future_to_target[future]
+            try:
+                results[target] = future.result()
+            except Exception:
+                results[target] = None
+    return results
+
+
 def fetch_direct_clickhandler(flight_obj_or_id) -> dict | None:
     """索取詳細飛行狀態、起降機場資訊、起飛與抵達時間、飛機圖片"""
     try:
@@ -701,11 +722,29 @@ if not df_matched.empty:
 if unmatched_targets:
     st.subheader("🔴 未查到 / 尚未起飛目標")
     st.caption("以下監控目標目前未在空中廣播訊號中偵測到，可能尚未起飛、已降落或暫無訊號：")
+    
+    # 併行查詢未查到目標的 Planespotters 照片
+    unmatched_img_map = fetch_unmatched_images(unmatched_targets)
+
     df_unmatched = pd.DataFrame(
         {
             "編號": range(1, len(unmatched_targets) + 1),
+            "機身照片": [unmatched_img_map.get(t) for t in unmatched_targets],
             "監控目標代碼": unmatched_targets,
             "狀態": ["🔴 尚未起飛 / 暫無訊號"] * len(unmatched_targets),
         }
     )
-    st.dataframe(df_unmatched, use_container_width=True, hide_index=True)
+
+    unmatched_col_config = {
+        "編號": st.column_config.NumberColumn("編號", width=50, format="%d"),
+        "機身照片": st.column_config.ImageColumn("機身照片", width="small"),
+        "監控目標代碼": st.column_config.TextColumn("監控目標代碼", width="medium"),
+        "狀態": st.column_config.TextColumn("狀態", width="medium"),
+    }
+
+    st.dataframe(
+        df_unmatched,
+        column_config=unmatched_col_config,
+        use_container_width=True,
+        hide_index=True,
+    )
