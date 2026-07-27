@@ -127,22 +127,44 @@ def fetch_planespotters_image(registration: str) -> str | None:
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def fetch_unmatched_images(unmatched_list: list[str]) -> dict[str, str | None]:
-    """併行批次抓取未查到目標的 Planespotters 照片並提供快取"""
+    """併行批次抓取未查到目標的照片，若為航班號則試圖解析機號"""
     results = {}
     if not unmatched_list:
         return results
 
+    def _worker(target: str):
+        # 1. 優先嘗試當作機身註冊號 (Registration) 抓取
+        img = fetch_planespotters_image(target)
+        if img:
+            return target, img
+
+        # 2. 若抓不到 (可能是航班號，如 EK9754)，嘗試透過 FR24 API 搜尋反查機號
+        try:
+            search_url = f"https://www.flightradar24.com/v1/search/web/find?query={target}"
+            res = http_session.get(search_url, timeout=3)
+            if res.status_code == 200:
+                data = res.json().get("results", [])
+                for item in data:
+                    detail = item.get("detail", {}) or {}
+                    reg = detail.get("reg") or item.get("id")
+                    if reg and str(reg).upper() != target:
+                        img_from_reg = fetch_planespotters_image(str(reg).upper())
+                        if img_from_reg:
+                            return target, img_from_reg
+        except Exception:
+            pass
+
+        return target, None
+
     with ThreadPoolExecutor(max_workers=8) as executor:
-        future_to_target = {
-            executor.submit(fetch_planespotters_image, target): target
-            for target in unmatched_list
-        }
-        for future in as_completed(future_to_target):
-            target = future_to_target[future]
+        futures = [executor.submit(_worker, t) for t in unmatched_list]
+        for future in as_completed(futures):
             try:
-                results[target] = future.result()
+                target, img_url = future.result()
+                results[target] = img_url
             except Exception:
-                results[target] = None
+                pass
+
     return results
 
 
@@ -722,14 +744,20 @@ if not df_matched.empty:
 if unmatched_targets:
     st.subheader("🔴 未查到 / 尚未起飛目標")
     st.caption("以下監控目標目前未在空中廣播訊號中偵測到，可能尚未起飛、已降落或暫無訊號：")
-    
-    # 併行查詢未查到目標的 Planespotters 照片
+
+    # 併行查詢未查到目標的照片
     unmatched_img_map = fetch_unmatched_images(unmatched_targets)
+
+    # 處理 None 值：若無照片網址則帶入空字串 ""，避免 Streamlit 顯示 "None" 字樣
+    photo_urls = [
+        unmatched_img_map.get(t) if unmatched_img_map.get(t) else ""
+        for t in unmatched_targets
+    ]
 
     df_unmatched = pd.DataFrame(
         {
             "編號": range(1, len(unmatched_targets) + 1),
-            "機身照片": [unmatched_img_map.get(t) for t in unmatched_targets],
+            "機身照片": photo_urls,
             "監控目標代碼": unmatched_targets,
             "狀態": ["🔴 尚未起飛 / 暫無訊號"] * len(unmatched_targets),
         }
