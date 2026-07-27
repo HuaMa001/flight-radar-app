@@ -127,18 +127,25 @@ def fetch_planespotters_image(registration: str) -> str | None:
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def fetch_unmatched_images(unmatched_list: list[str]) -> dict[str, str | None]:
-    """併行批次抓取未查到目標的照片，若為航班號則試圖解析機號"""
+    """併行批次抓取未查到目標的照片，支援帶/不帶連字號 (-) 自動重試與航班號反查"""
     results = {}
     if not unmatched_list:
         return results
 
     def _worker(target: str):
-        # 1. 優先嘗試當作機身註冊號 (Registration) 抓取
+        # 1. 先以原始輸入嘗試 (例如: B-5633, JA784A)
         img = fetch_planespotters_image(target)
         if img:
             return target, img
 
-        # 2. 若抓不到 (可能是航班號，如 EK9754)，嘗試透過 FR24 API 搜尋反查機號
+        # 2. 自動去連字號重試 (例如: B-5633 -> B5633)
+        target_clean = target.replace("-", "")
+        if target_clean != target:
+            img_clean = fetch_planespotters_image(target_clean)
+            if img_clean:
+                return target, img_clean
+
+        # 3. 若為航班號 (例如 EK9754)，嘗試反查對應預定機號
         try:
             search_url = f"https://www.flightradar24.com/v1/search/web/find?query={target}"
             res = http_session.get(search_url, timeout=3)
@@ -148,7 +155,8 @@ def fetch_unmatched_images(unmatched_list: list[str]) -> dict[str, str | None]:
                     detail = item.get("detail", {}) or {}
                     reg = detail.get("reg") or item.get("id")
                     if reg and str(reg).upper() != target:
-                        img_from_reg = fetch_planespotters_image(str(reg).upper())
+                        reg_str = str(reg).upper()
+                        img_from_reg = fetch_planespotters_image(reg_str) or fetch_planespotters_image(reg_str.replace("-", ""))
                         if img_from_reg:
                             return target, img_from_reg
         except Exception:
@@ -156,7 +164,8 @@ def fetch_unmatched_images(unmatched_list: list[str]) -> dict[str, str | None]:
 
         return target, None
 
-    with ThreadPoolExecutor(max_workers=8) as executor:
+    # max_workers 設為 4，防請求過快被 Planespotters API 限流
+    with ThreadPoolExecutor(max_workers=4) as executor:
         futures = [executor.submit(_worker, t) for t in unmatched_list]
         for future in as_completed(futures):
             try:
@@ -256,7 +265,7 @@ def fetch_direct_clickhandler(flight_obj_or_id) -> dict | None:
             image_url = large_images[0].get("src")
 
         if not image_url and f_reg != "未知":
-            image_url = fetch_planespotters_image(f_reg)
+            image_url = fetch_planespotters_image(f_reg) or fetch_planespotters_image(f_reg.replace("-", ""))
 
         return {
             "origin": origin,
@@ -745,10 +754,10 @@ if unmatched_targets:
     st.subheader("🔴 未查到 / 尚未起飛目標")
     st.caption("以下監控目標目前未在空中廣播訊號中偵測到，可能尚未起飛、已降落或暫無訊號：")
 
-    # 併行查詢未查到目標的照片
+    # 併行查詢未查到目標的照片 (含去橫槓重試)
     unmatched_img_map = fetch_unmatched_images(unmatched_targets)
 
-    # 處理 None 值：若無照片網址則帶入空字串 ""，避免 Streamlit 顯示 "None" 字樣
+    # 處理 None 值：若無照片網址帶入空字串 ""，使欄位乾淨留白而非顯示 "None" 字樣
     photo_urls = [
         unmatched_img_map.get(t) if unmatched_img_map.get(t) else ""
         for t in unmatched_targets
