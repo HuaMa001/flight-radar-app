@@ -106,46 +106,51 @@ def check_is_taiwan(text_or_code: str) -> bool:
 
 
 def fetch_planespotters_image(registration: str) -> str | None:
-    """從 Planespotters.net 免費 API 依據機身註冊號獲取照片"""
+    """從 Planespotters.net 免費 API 依據機身註冊號獲取照片 (含自動去連字號重試與防限流)"""
     if not registration or registration == "未知":
         return None
-    try:
-        url = f"https://api.planespotters.net/pub/photos/reg/{registration}"
-        res = http_session.get(url, timeout=4)
-        if res.status_code == 200:
-            data = res.json()
-            photos = data.get("photos", [])
-            if photos:
-                return (
-                    photos[0].get("thumbnail_large", {}).get("src")
-                    or photos[0].get("thumbnail", {}).get("src")
-                )
-    except Exception:
-        pass
+
+    clean_reg = registration.replace("-", "").strip()
+    regs_to_try = [registration]
+    if clean_reg != registration:
+        regs_to_try.append(clean_reg)
+
+    for reg in regs_to_try:
+        try:
+            url = f"https://api.planespotters.net/pub/photos/reg/{reg}"
+            res = http_session.get(url, timeout=5)
+
+            if res.status_code == 200:
+                data = res.json()
+                photos = data.get("photos", [])
+                if photos:
+                    return (
+                        photos[0].get("thumbnail_large", {}).get("src")
+                        or photos[0].get("thumbnail", {}).get("src")
+                    )
+            elif res.status_code == 429:
+                time.sleep(1)
+        except Exception:
+            pass
+
     return None
 
 
-@st.cache_data(ttl=3600, show_spinner=False)
+@st.cache_data(ttl=1800, show_spinner=False)
 def fetch_unmatched_images(unmatched_list: list[str]) -> dict[str, str | None]:
-    """併行批次抓取未查到目標的照片，支援帶/不帶連字號 (-) 自動重試與航班號反查"""
+    """併行批次抓取未查到目標的照片 (控制請求頻率以防 API 限流)"""
     results = {}
     if not unmatched_list:
         return results
 
     def _worker(target: str):
-        # 1. 先以原始輸入嘗試 (例如: B-5633, JA784A)
+        time.sleep(0.15)  # 微幅延遲避免觸發 Cloudflare 封鎖
+
         img = fetch_planespotters_image(target)
         if img:
             return target, img
 
-        # 2. 自動去連字號重試 (例如: B-5633 -> B5633)
-        target_clean = target.replace("-", "")
-        if target_clean != target:
-            img_clean = fetch_planespotters_image(target_clean)
-            if img_clean:
-                return target, img_clean
-
-        # 3. 若為航班號 (例如 EK9754)，嘗試反查對應預定機號
+        # 若為航班號 (例如 EK9754)，嘗試反查對應預定機號
         try:
             search_url = f"https://www.flightradar24.com/v1/search/web/find?query={target}"
             res = http_session.get(search_url, timeout=3)
@@ -156,7 +161,7 @@ def fetch_unmatched_images(unmatched_list: list[str]) -> dict[str, str | None]:
                     reg = detail.get("reg") or item.get("id")
                     if reg and str(reg).upper() != target:
                         reg_str = str(reg).upper()
-                        img_from_reg = fetch_planespotters_image(reg_str) or fetch_planespotters_image(reg_str.replace("-", ""))
+                        img_from_reg = fetch_planespotters_image(reg_str)
                         if img_from_reg:
                             return target, img_from_reg
         except Exception:
@@ -164,8 +169,8 @@ def fetch_unmatched_images(unmatched_list: list[str]) -> dict[str, str | None]:
 
         return target, None
 
-    # max_workers 設為 4，防請求過快被 Planespotters API 限流
-    with ThreadPoolExecutor(max_workers=4) as executor:
+    # 控制併行線程數量，避免觸發 429 限流
+    with ThreadPoolExecutor(max_workers=2) as executor:
         futures = [executor.submit(_worker, t) for t in unmatched_list]
         for future in as_completed(futures):
             try:
@@ -242,15 +247,13 @@ def fetch_direct_clickhandler(flight_obj_or_id) -> dict | None:
 
         # 抓取起飛與抵達時間
         time_data = details.get("time") or {}
-        
-        # 起飛時間 (實際 ATD -> 預計 ETD -> 排定 STD)
+
         std_ts = (time_data.get("scheduled") or {}).get("departure")
         etd_ts = (time_data.get("estimated") or {}).get("departure")
         atd_ts = (time_data.get("real") or {}).get("departure")
         dep_ts = atd_ts or etd_ts or std_ts
         dep_full = format_full_datetime(dep_ts)
 
-        # 抵達時間 (預計 ETA -> 實際 ATA -> 排定 STA)
         sta_ts = (time_data.get("scheduled") or {}).get("arrival")
         eta_ts = (time_data.get("estimated") or {}).get("arrival")
         ata_ts = (time_data.get("real") or {}).get("arrival")
@@ -265,7 +268,7 @@ def fetch_direct_clickhandler(flight_obj_or_id) -> dict | None:
             image_url = large_images[0].get("src")
 
         if not image_url and f_reg != "未知":
-            image_url = fetch_planespotters_image(f_reg) or fetch_planespotters_image(f_reg.replace("-", ""))
+            image_url = fetch_planespotters_image(f_reg)
 
         return {
             "origin": origin,
@@ -320,7 +323,6 @@ def search_single_target_worker(target_raw: str, all_flights: list) -> dict | No
                 dep_ts = details.get("dep_ts")
 
                 is_taiwan_dest = check_is_taiwan(destination)
-                # 從台灣起飛且起飛時間 >= 現在時間才標記
                 is_taiwan_orig = check_is_taiwan(origin) and (dep_ts is not None and dep_ts >= now_ts)
 
                 return {
@@ -367,7 +369,6 @@ def search_single_target_worker(target_raw: str, all_flights: list) -> dict | No
                             dep_ts = details.get("dep_ts")
 
                             is_taiwan_dest = check_is_taiwan(destination)
-                            # 從台灣起飛且起飛時間 >= 現在時間才標記
                             is_taiwan_orig = check_is_taiwan(origin) and (dep_ts is not None and dep_ts >= now_ts)
 
                             return {
@@ -408,7 +409,7 @@ default_text_value = "\n".join(DEFAULT_TARGETS)
 
 with st.sidebar:
     st.header("⚙️ 監控清單")
-    
+
     if DEFAULT_TARGETS:
         st.caption(f"📁 已從 `targets.txt` 載入 {len(DEFAULT_TARGETS)} 架預設目標")
     else:
@@ -420,7 +421,7 @@ with st.sidebar:
         "飛機代碼清單 (每行一班)",
         value=default_text_value,
         height=280,
-        placeholder="請輸入機號（每行一個，例如：\nB-KQU\nB-LRJ\nHL7628）"
+        placeholder="請輸入機號（每行一個，例如：\nB-KQU\nB-LRJ\nHL7628）",
     )
 
     targets = [f.strip().upper() for f in flight_input.split("\n") if f.strip()]
@@ -589,7 +590,7 @@ if not df_matched.empty:
         .reset_index(drop=True)
     )
 
-    # 地圖圓點顏色計算 (已符合條件的台灣起飛航班:綠色, 降落台灣:紅色, 其他:灰色)
+    # 地圖圓點顏色計算
     def assign_marker_color(row):
         if row.get("_is_taiwan_orig"):
             return [46, 204, 113, 230]  # 🟢 綠色 (台灣起飛)
@@ -705,7 +706,6 @@ if not df_matched.empty:
         "資料來源",
     ]
 
-    # 防禦機制：確保舊 Session 數據也能補齊欄位
     for col in ordered_cols:
         if col not in df_sorted.columns:
             df_sorted[col] = "未知"
@@ -728,7 +728,6 @@ if not df_matched.empty:
         "資料來源": st.column_config.TextColumn("資料來源", width="small"),
     }
 
-    # 行高亮邏輯：台灣起飛 或 降落台灣 套用綠色底樣式
     def style_taiwan_rows(row):
         is_orig = row.get("台灣起飛") == "🛫 台灣起飛"
         is_dest = row.get("降落台灣") == "🇹🇼 降落台灣"
@@ -754,10 +753,10 @@ if unmatched_targets:
     st.subheader("🔴 未查到 / 尚未起飛目標")
     st.caption("以下監控目標目前未在空中廣播訊號中偵測到，可能尚未起飛、已降落或暫無訊號：")
 
-    # 併行查詢未查到目標的照片 (含去橫槓重試)
+    # 併行查詢未查到目標的照片 (含去橫槓重試與防限流)
     unmatched_img_map = fetch_unmatched_images(unmatched_targets)
 
-    # 處理 None 值：若無照片網址帶入空字串 ""，使欄位乾淨留白而非顯示 "None" 字樣
+    # 處理 None 值：若無照片網址帶入空字串 ""，使欄位乾淨留白
     photo_urls = [
         unmatched_img_map.get(t) if unmatched_img_map.get(t) else ""
         for t in unmatched_targets
