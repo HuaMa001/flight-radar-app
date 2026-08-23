@@ -235,7 +235,7 @@ def search_single_target(target_raw: str, all_flights: list, flight_map_by_id: d
                     "source": "📡 直播廣播",
                 }
 
-    # 階段 2：Web API 反查（二次核實時給予較長的對應延遲）
+    # 階段 2：Web API 反查
     delay = random.uniform(0.2, 0.4) if is_retry else random.uniform(0.05, 0.15)
     time.sleep(delay)
     search_url = f"https://www.flightradar24.com/v1/search/web/find?query={target_raw}"
@@ -402,7 +402,7 @@ def main():
         print(f"\n⏳ 進入二次核實階段... 暫停 {RETRY_WAIT_SEC} 秒以解除 API 頻率限制（剩餘未查到：{len(unmatched_targets)} 架）")
         time.sleep(RETRY_WAIT_SEC)
 
-        stable_threshold_phase2 = 10  # 二次核實需連續 10 輪數字穩定
+        stable_threshold_phase2 = 10
         retry_last_unmatched = -1
         retry_stable_counter = 0
         retry_round = 0
@@ -443,7 +443,6 @@ def main():
                 getattr(f, "id", ""): f for f in snapshot if getattr(f, "id", "")
             }
 
-            # 二次核實使用較低的線程數 (4 個 workers) 以提高發射成功率
             with ThreadPoolExecutor(max_workers=4) as executor:
                 future_to_target = {
                     executor.submit(
@@ -468,11 +467,13 @@ def main():
             time.sleep(1)
 
     # === 最終統計與推播 ===
-    # 將判定基準時間改為目前時間 + 30分鐘 (30 * 60 秒 = 1800 秒)
-    now_ts = int(time.time()) + 30 * 60
+    now_ts = int(time.time())
+    limit_ts = now_ts + 30 * 60  # 目前時間 + 30 分鐘
+
+    # 篩選條件：台灣起飛 且 起飛時間介於「現在」至「30分鐘以內」
     taiwan_departures = [
         f for f in matched_dict.values()
-        if f["is_taiwan_origin"] and f["dep_ts"] and int(f["dep_ts"]) > now_ts
+        if f["is_taiwan_origin"] and f["dep_ts"] and now_ts <= int(f["dep_ts"]) < limit_ts
     ]
 
     final_unmatched = len(TARGETS) - len(matched_dict)
@@ -481,15 +482,16 @@ def main():
         f"\n📊 掃描結果總結：\n"
         f" • 監控目標數：{len(TARGETS)} 架\n"
         f" • 成功定位（系統/空中）：{len(matched_dict)} 架\n"
-        f" • 🛫 預計自台灣起飛 (起飛時間 > 目前+30分)：{len(taiwan_departures)} 架\n"
+        f" • 🛫 30分鐘內即將自台灣起飛：{len(taiwan_departures)} 架\n"
         f" • ❌ 未在空中/無資料：{final_unmatched} 架"
     )
 
     if taiwan_departures:
         send_discord_webhook(taiwan_departures)
     else:
-        print("ℹ️ 目前沒有目標班機符合起飛時間大於目前+30分鐘的條件，不發送 Discord 警報。")
+        print("ℹ️ 目前沒有目標班機將在 30 分鐘內自台灣起飛，不發送 Discord 警報。")
 
 
 if __name__ == "__main__":
     main()
+        
