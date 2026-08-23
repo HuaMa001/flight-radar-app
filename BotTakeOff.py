@@ -468,7 +468,8 @@ def main():
             time.sleep(1)
 
     # === 最終統計與推播 ===
-    now_ts = int(time.time())
+    # 將判定基準時間改為目前時間 + 30分鐘 (30 * 60 秒 = 1800 秒)
+    now_ts = int(time.time()) + 30 * 60
     taiwan_departures = [
         f for f in matched_dict.values()
         if f["is_taiwan_origin"] and f["dep_ts"] and int(f["dep_ts"]) > now_ts
@@ -480,14 +481,14 @@ def main():
         f"\n📊 掃描結果總結：\n"
         f" • 監控目標數：{len(TARGETS)} 架\n"
         f" • 成功定位（系統/空中）：{len(matched_dict)} 架\n"
-        f" • 🛫 預計自台灣起飛 (尚未起飛)：{len(taiwan_departures)} 架\n"
+        f" • 🛫 預計自台灣起飛 (起飛時間 > 目前+30分)：{len(taiwan_departures)} 架\n"
         f" • ❌ 未在空中/無資料：{final_unmatched} 架"
     )
 
     if taiwan_departures:
         send_discord_webhook(taiwan_departures)
     else:
-        print("ℹ️ 目前沒有目標班機即將自台灣起飛，不發送 Discord 警報。")
+        print("ℹ️ 目前沒有目標班機符合起飛時間大於目前+30分鐘的條件，不發送 Discord 警報。")
 
 
 if __name__ == "__main__":
