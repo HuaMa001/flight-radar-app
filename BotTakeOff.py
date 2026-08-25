@@ -467,7 +467,7 @@ def main():
             time.sleep(1)
 
     # === 最終統計與推播 ===
-    now_ts = int(time.time())
+    now_ts = int(time.time())-30*60
     limit_ts = now_ts + 30 * 60  # 目前時間 + 30 分鐘
 
     # 篩選條件：台灣起飛 且 起飛時間介於「現在」至「30分鐘以內」
