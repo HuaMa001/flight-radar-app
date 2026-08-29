@@ -467,10 +467,10 @@ def main():
             time.sleep(1)
 
     # === 最終統計與推播 ===
-    now_ts = int(time.time())-30*60
-    limit_ts = now_ts + 30 * 60  # 目前時間 + 30 分鐘
+    now_ts = int(time.time())-10*60
+    limit_ts = now_ts + 10 * 60  # 目前時間 + 10 分鐘
 
-    # 篩選條件：台灣起飛 且 起飛時間介於「現在」至「30分鐘以內」
+    # 篩選條件：台灣起飛 且 起飛時間介於「現在」至「10分鐘以內」
     taiwan_departures = [
         f for f in matched_dict.values()
         if f["is_taiwan_origin"] and f["dep_ts"] and now_ts <= int(f["dep_ts"]) < limit_ts
