@@ -50,7 +50,7 @@ TARGETS = load_targets("targets.txt")
 
 
 # ============================================================
-# 2. HTTP Session (FR24 專用)
+# 2. HTTP Session (保持長連接與 Cookie，突破防護)
 # ============================================================
 
 http_session = requests.Session()
@@ -60,7 +60,7 @@ http_session.mount("http://", adapter)
 
 
 # ============================================================
-# 3. Header
+# 3. Header (包含完整的瀏覽器特徵)
 # ============================================================
 
 USER_AGENTS = [
@@ -117,7 +117,7 @@ def check_is_taiwan(text_or_code: str) -> bool:
 
 
 # ============================================================
-# 5. PlaneSpotters 圖片兜底
+# 5. PlaneSpotters 圖片兜底 (已還原為成功突破 Cloudflare 的寫法)
 # ============================================================
 
 def fetch_planespotters_image(registration: str) -> str | None:
@@ -126,11 +126,8 @@ def fetch_planespotters_image(registration: str) -> str | None:
         
     try:
         url = f"https://api.planespotters.net/pub/photos/reg/{registration.strip()}"
-        clean_headers = {
-            "User-Agent": random.choice(USER_AGENTS),
-            "Accept": "application/json"
-        }
-        res = requests.get(url, headers=clean_headers, timeout=5)
+        # 使用完整的 get_headers() 與 http_session，偽裝成真實瀏覽器以通過防護
+        res = http_session.get(url, headers=get_headers(), timeout=5)
         if res.status_code == 200:
             photos = res.json().get("photos", [])
             if photos:
@@ -179,7 +176,7 @@ def fetch_direct_clickhandler(fr_api_inst, flight_obj_or_id) -> dict | None:
         ac_code = (ac.get("model") or {}).get("code") or "未知"
 
         # ----------------------------------------------------
-        # 僅擷取「起飛時間」(已刪除抵達時間)
+        # 僅擷取「起飛時間」
         # ----------------------------------------------------
         time_data = details.get("time") or {}
         std_ts = (time_data.get("scheduled") or {}).get("departure")
@@ -298,9 +295,23 @@ def scan_taiwan_airport_schedules(unmatched_targets: list, fr_api_inst) -> dict:
                         dest = flight.get("airport", {}).get("destination", {}).get("code", {}).get("iata", "未知")
                         dep_ts = flight.get("time", {}).get("scheduled", {}).get("departure")
                         
-                        # 深度圖片反查：利用隱藏 flight id 優先獲取 FR24 JetPhotos 官方圖
                         image_url = None
                         flight_id = flight.get("identification", {}).get("id")
+                        
+                        # 核心修正：如果航班尚未起飛(無id)，透過歷史紀錄溯源獲取 FR24 官方美圖
+                        if not flight_id and f_reg:
+                            try:
+                                history_url = f"https://api.flightradar24.com/common/v1/flight/list.json?query={f_reg}&fetchBy=reg&page=1&limit=3"
+                                h_res = http_session.get(history_url, headers=get_headers(), timeout=3)
+                                if h_res.status_code == 200:
+                                    for h_f in h_res.json().get("result", {}).get("response", {}).get("data", []):
+                                        if h_f.get("identification", {}).get("id"):
+                                            flight_id = h_f["identification"]["id"]
+                                            break
+                            except Exception:
+                                pass
+                        
+                        # 解析抓到的 ID
                         if flight_id:
                             try:
                                 deep_details = fetch_direct_clickhandler(fr_api_inst, flight_id)
@@ -397,9 +408,23 @@ def web_search_target(target_raw: str, fr_api_inst) -> dict | None:
             if not (t_norm == normalize_target(f_reg) or t_norm == normalize_target(f_num)):
                 continue
 
-            # 深度圖片反查：利用隱藏 flight id 優先獲取 FR24 JetPhotos 官方圖
             image_url = None
             flight_id = best_flight.get("identification", {}).get("id")
+            
+            # 核心修正：若航班尚未起飛(無id)，透過歷史紀錄溯源獲取 FR24 官方美圖
+            if not flight_id and f_reg != "未知":
+                try:
+                    history_url = f"https://api.flightradar24.com/common/v1/flight/list.json?query={f_reg}&fetchBy=reg&page=1&limit=3"
+                    h_res = http_session.get(history_url, headers=get_headers(), timeout=3)
+                    if h_res.status_code == 200:
+                        for h_f in h_res.json().get("result", {}).get("response", {}).get("data", []):
+                            if h_f.get("identification", {}).get("id"):
+                                flight_id = h_f["identification"]["id"]
+                                break
+                except Exception:
+                    pass
+
+            # 解析抓到的 ID
             if flight_id:
                 try:
                     deep_details = fetch_direct_clickhandler(fr_api_inst, flight_id)
@@ -439,7 +464,7 @@ def send_discord_webhook(taiwan_flights: list):
     for f in taiwan_flights:
         embed = {
             "title": f"🚨 彩繪機台灣起飛警報：{f['f_num']}",
-           "color": 0x3498DB, 
+            "color": 0x3498DB,  # 十六進位水藍色代碼
             "fields": [
                 {
                     "name": "機身註冊號", 
