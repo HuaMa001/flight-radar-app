@@ -117,11 +117,52 @@ def check_is_taiwan(text_or_code: str) -> bool:
 
 
 # ============================================================
-# 5. 圖片獨立請求模組 (僅限最後符合條件時調用)
+# 5. 圖片獨立請求與 Wikimedia Commons 備援模組
 # ============================================================
 
+def fetch_wikimedia_image(registration: str) -> str | None:
+    """當 PlaneSpotters 失敗時，透過 Wikimedia Commons API 進行備援搜尋"""
+    if not registration or registration == "未知": return None
+    try:
+        print(f"     [圖片] 正在向 Wikimedia Commons 搜尋 {registration} 的圖片...")
+        search_url = "https://commons.wikimedia.org/w/api.php"
+        search_params = {
+            "action": "query",
+            "format": "json",
+            "list": "search",
+            "srnamespace": "6",
+            "srsearch": registration,
+            "srlimit": 1
+        }
+        headers = {"User-Agent": "FlightTrackerBot/1.0 (Educational Project)"}
+        res = requests.get(search_url, params=search_params, headers=headers, timeout=5)
+        
+        if res.status_code == 200:
+            data = res.json()
+            search_results = data.get("query", {}).get("search", [])
+            if search_results:
+                file_title = search_results[0].get("title")
+                info_params = {
+                    "action": "query",
+                    "format": "json",
+                    "titles": file_title,
+                    "prop": "imageinfo",
+                    "iiprop": "url"
+                }
+                info_res = requests.get(search_url, params=info_params, headers=headers, timeout=5)
+                if info_res.status_code == 200:
+                    pages = info_res.json().get("query", {}).get("pages", {})
+                    for page_id, page_info in pages.items():
+                        imageinfo = page_info.get("imageinfo", [])
+                        if imageinfo:
+                            print(f"     [圖片] 成功從 Wikimedia Commons 獲取圖片！")
+                            return imageinfo[0].get("url")
+    except Exception as e:
+        print(f"     [圖片] Wikimedia 查詢異常: {e}")
+    return None
+
 def fetch_planespotters_image(registration: str) -> str | None:
-    """獨立乾淨的請求，避免被 PlaneSpotters 擋下"""
+    """獨立乾淨的請求，失敗時自動導向 Wikimedia 備援"""
     if not registration or registration == "未知": return None
     try:
         print(f"     [圖片] 正在向 PlaneSpotters 請求 {registration} 的兜底圖片...")
@@ -131,7 +172,7 @@ def fetch_planespotters_image(registration: str) -> str | None:
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
             "Accept-Language": "en-US,en;q=0.5"
         }
-        res = requests.get(url, headers=clean_headers, timeout=5) # 獨立 requests 不用 session
+        res = requests.get(url, headers=clean_headers, timeout=5)
         if res.status_code == 200:
             photos = res.json().get("photos", [])
             if photos:
@@ -140,7 +181,9 @@ def fetch_planespotters_image(registration: str) -> str | None:
             print(f"     [圖片] PlaneSpotters 拒絕請求，狀態碼: {res.status_code}")
     except Exception as e:
         print(f"     [圖片] 獲取 {registration} 發生異常: {e}")
-    return None
+    
+    # PlaneSpotters 失敗時，轉交 Wikimedia Commons 兜底
+    return fetch_wikimedia_image(registration)
 
 def get_best_image_for_target(f_reg: str, fr_api_inst) -> str | None:
     """最終確認推播前，才執行的深度圖片搜尋邏輯"""
@@ -163,7 +206,7 @@ def get_best_image_for_target(f_reg: str, fr_api_inst) -> str | None:
     except Exception:
         pass
 
-    # 2. 官方沒圖，才使用 PlaneSpotters 兜底
+    # 2. 官方沒圖，才使用 PlaneSpotters / Wikimedia 兜底
     return fetch_planespotters_image(f_reg)
 
 
@@ -211,7 +254,6 @@ def fetch_direct_clickhandler(fr_api_inst, flight_obj_or_id) -> dict | None:
         dep_ts = etd_ts or std_ts or atd_ts
         dep_full = format_full_datetime(dep_ts)
 
-        # 這裡只拿 Payload 內建的圖片，不執行外部兜底，避免掃描過慢
         image_url = None
         images = ac.get("images") or {}
         large_images = images.get("large") or images.get("medium") or []
@@ -322,7 +364,7 @@ def scan_taiwan_airport_schedules(unmatched_targets: list) -> dict:
                             "dep_time": dep_time_str, "dep_ts": dep_ts,
                             "is_taiwan_origin": True,
                             "is_future": bool(dep_ts and int(dep_ts) > int(time.time())),
-                            "image_url": None, # 暫時不抓圖，等確認起飛時間符合再說
+                            "image_url": None,
                             "source": f"📅 機場時刻表 ({apt})"
                         }
                         print(f"  └─ 🟢 [時刻表抓取] {t} -> {f_num} ({apt} ➔ {dest}) | 🕒 {dep_time_str}")
@@ -393,7 +435,7 @@ def web_search_target(target_raw: str) -> dict | None:
                 "dep_time": format_full_datetime(dep_ts), "dep_ts": dep_ts,
                 "is_taiwan_origin": check_is_taiwan(orig),
                 "is_future": bool(dep_ts and int(dep_ts) > current_ts),
-                "image_url": None, # 暫時不抓圖，等確認起飛時間符合再說
+                "image_url": None,
                 "source": f"🔍 航班資料庫 API ({fetch_by.upper()})"
             }
         except Exception:
@@ -437,7 +479,6 @@ def send_discord_webhook(taiwan_flights: list):
             },
         }
 
-        # 將稍早動態補抓到的圖片網址塞進去
         if f.get("image_url"):
             embed["image"] = {"url": f["image_url"]}
 
@@ -569,7 +610,6 @@ def main():
     if taiwan_departures:
         print("\n🚨 發現符合時間區間起飛的目標，開始獲取圖片並準備推播...")
         for f in taiwan_departures:
-            # 延遲加載：若剛才沒拿到圖片，現在才深度請求，節省 API 配額
             if not f.get("image_url"):
                 f["image_url"] = get_best_image_for_target(f["f_reg"], fr_api_inst)
                 
@@ -582,7 +622,7 @@ def main():
         actually_unmatched = [t for t in TARGETS if t not in matched_dict]
         if actually_unmatched:
             print("\n❌ 以下目標目前無近期飛行紀錄 (可能在長程維修中)：")
-            for t in actually_unmatched: print(f"   - {t}")
+            for t in actually_unmatched: print(f"    - {t}")
 
     print("\n✅ 程式執行完成。")
 
