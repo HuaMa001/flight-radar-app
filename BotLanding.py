@@ -172,19 +172,25 @@ def fetch_jetphotos_image(registration: str) -> str | None:
         print(f"     [圖片] 正在向 JetPhotos 搜尋 {registration} 的圖片...")
         url = f"https://www.jetphotos.com/api/json?reg={registration.strip()}"
         headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
             "Accept": "application/json, text/plain, */*",
+            "Accept-Language": "zh-TW,zh;q=0.9,en-US;q=0.8,en;q=0.7",
             "Referer": "https://www.jetphotos.com/",
         }
+        time.sleep(0.5)
         res = requests.get(url, headers=headers, timeout=6)
+        
         if res.status_code == 200:
             data = res.json()
             photos = data.get("data", [])
             if photos:
-                # 取得大圖連結
+                print(f"     [圖片] 成功從 JetPhotos 獲取圖片！")
                 return photos[0].get("file_url") or photos[0].get("thumbnail_large_url")
+        else:
+            print(f"     [圖片] JetPhotos 請求失敗，狀態碼: {res.status_code}")
     except Exception as e:
         print(f"     [圖片] JetPhotos 查詢異常: {e}")
+        
     return None
     
 def fetch_planespotters_image(registration: str) -> str | None:
