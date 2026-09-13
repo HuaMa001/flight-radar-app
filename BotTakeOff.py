@@ -4,6 +4,8 @@ import os
 import random
 import time
 import requests
+from urllib.parse import quote
+
 from FlightRadarAPI import FlightRadar24API
 
 
@@ -20,14 +22,19 @@ DISCORD_WEBHOOK_URL = os.getenv(
 def load_targets(filepath: str = "targets.txt") -> list[str]:
     """
     從 targets.txt 讀取監控清單。
-    如果不存在或沒有內容，則嘗試讀取 TARGET_PLANES 環境變數。
+
+    如果不存在或沒有內容，
+    嘗試讀取 TARGET_PLANES 環境變數。
     """
 
     targets = []
 
     if os.path.exists(filepath):
+
         try:
+
             with open(filepath, "r", encoding="utf-8") as f:
+
                 targets = [
                     line.strip().upper()
                     for line in f
@@ -41,10 +48,17 @@ def load_targets(filepath: str = "targets.txt") -> list[str]:
             )
 
         except Exception as e:
-            print(f"⚠️ 讀取 `{filepath}` 失敗: {e}")
+
+            print(
+                f"⚠️ 讀取 `{filepath}` 失敗: {e}"
+            )
 
     if not targets:
-        raw_targets = os.getenv("TARGET_PLANES", "")
+
+        raw_targets = os.getenv(
+            "TARGET_PLANES",
+            ""
+        )
 
         if raw_targets and raw_targets.strip():
 
@@ -82,13 +96,20 @@ TARGETS = load_targets("targets.txt")
 http_session = requests.Session()
 
 adapter = requests.adapters.HTTPAdapter(
-    pool_connections=30,
-    pool_maxsize=30,
+    pool_connections=50,
+    pool_maxsize=50,
     max_retries=0
 )
 
-http_session.mount("https://", adapter)
-http_session.mount("http://", adapter)
+http_session.mount(
+    "https://",
+    adapter
+)
+
+http_session.mount(
+    "http://",
+    adapter
+)
 
 
 # ============================================================
@@ -96,32 +117,40 @@ http_session.mount("http://", adapter)
 # ============================================================
 
 USER_AGENTS = [
+
     (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
         "AppleWebKit/537.36 (KHTML, like Gecko) "
         "Chrome/124.0.0.0 Safari/537.36"
     ),
+
     (
         "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
         "AppleWebKit/537.36 (KHTML, like Gecko) "
         "Chrome/123.0.0.0 Safari/537.36"
     ),
+
     (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:125.0) "
         "Gecko/20100101 Firefox/125.0"
     ),
+
+    (
+        "Mozilla/5.0 (X11; Linux x86_64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/124.0.0.0 Safari/537.36"
+    )
 ]
 
 
 def get_headers():
-    """
-    產生請求 Header。
-    """
 
     return {
         "User-Agent": random.choice(USER_AGENTS),
         "Accept": "application/json, text/plain, */*",
-        "Accept-Language": "zh-TW,zh;q=0.9,en-US;q=0.8,en;q=0.7",
+        "Accept-Language": (
+            "zh-TW,zh;q=0.9,en-US;q=0.8,en;q=0.7"
+        ),
         "Referer": "https://www.flightradar24.com/",
         "Origin": "https://www.flightradar24.com",
         "Connection": "keep-alive",
@@ -134,58 +163,117 @@ def get_headers():
 
 def normalize_target(value: str) -> str:
     """
-    標準化比對字串。
+    強化版標準化。
 
     例如：
-        B-1234 -> B1234
-        b-1234 -> B1234
+
+        B-1234
+        B 1234
+        b1234
+
+    全部 -> B1234
     """
 
     if not value:
+
         return ""
 
-    return (
-        str(value)
-        .upper()
-        .strip()
-        .replace("-", "")
-        .replace(" ", "")
-    )
+    value = str(value).upper().strip()
+
+    # 去除常見符號
+    remove_chars = [
+        "-",
+        " ",
+        "_",
+        "/",
+        ".",
+    ]
+
+    for c in remove_chars:
+
+        value = value.replace(c, "")
+
+    return value
+
+
+def clean_value(value) -> str:
+
+    if value is None:
+
+        return ""
+
+    if isinstance(value, dict):
+
+        for key in [
+            "default",
+            "name",
+            "value",
+            "iata",
+            "icao",
+            "registration",
+            "callsign",
+            "number",
+            "code",
+        ]:
+
+            if key in value and value[key]:
+
+                return str(
+                    value[key]
+                ).upper().strip()
+
+        return ""
+
+    return str(value).upper().strip()
 
 
 def format_full_datetime(ts: int | None) -> str:
-    """
-    Unix timestamp -> 台灣時間
-    """
 
     if not ts:
+
         return "未知"
 
     try:
-        tz_tw = timezone(timedelta(hours=8))
+
+        tz_tw = timezone(
+            timedelta(hours=8)
+        )
 
         dt = datetime.fromtimestamp(
             int(ts),
             tz=tz_tw
         )
 
-        return dt.strftime("%Y-%m-%d %H:%M")
+        return dt.strftime(
+            "%Y-%m-%d %H:%M"
+        )
 
     except Exception:
+
         return "未知"
 
 
-def check_is_taiwan(text_or_code: str) -> bool:
-    """
-    判斷機場 / 地點是否為台灣。
-    """
+# ============================================================
+# 5. 台灣判斷
+# ============================================================
 
-    if not text_or_code or text_or_code == "未知":
+def check_is_taiwan(
+    text_or_code: str
+) -> bool:
+
+    if (
+        not text_or_code
+        or text_or_code == "未知"
+    ):
+
         return False
 
-    s = str(text_or_code).upper().strip()
+    s = str(
+        text_or_code
+    ).upper().strip()
 
     tw_airport_codes = {
+
         "TPE",
         "TSA",
         "KHH",
@@ -199,6 +287,7 @@ def check_is_taiwan(text_or_code: str) -> bool:
         "PIF",
         "LZN",
         "CMJ",
+
         "RCTP",
         "RCSS",
         "RCKH",
@@ -214,13 +303,19 @@ def check_is_taiwan(text_or_code: str) -> bool:
     }
 
     if s in tw_airport_codes:
+
         return True
 
-    # ICAO 台灣機場通常 RC 開頭
-    if len(s) == 4 and s.startswith("RC"):
+    # ICAO 台灣機場
+    if (
+        len(s) == 4
+        and s.startswith("RC")
+    ):
+
         return True
 
     tw_name_keywords = [
+
         "TAIPEI",
         "TAIWAN",
         "KAOHSIUNG",
@@ -231,6 +326,7 @@ def check_is_taiwan(text_or_code: str) -> bool:
         "PENGHU",
         "KINMEN",
         "MATSU",
+
         "台北",
         "台灣",
         "高雄",
@@ -250,14 +346,18 @@ def check_is_taiwan(text_or_code: str) -> bool:
 
 
 # ============================================================
-# 5. PlaneSpotters
+# 6. PlaneSpotters
 # ============================================================
 
 def fetch_planespotters_image(
     registration: str
 ) -> str | None:
 
-    if not registration or registration == "未知":
+    if (
+        not registration
+        or registration == "未知"
+    ):
+
         return None
 
     try:
@@ -273,39 +373,44 @@ def fetch_planespotters_image(
             timeout=3
         )
 
-        if res.status_code == 200:
+        if res.status_code != 200:
 
-            photos = res.json().get(
+            return None
+
+        photos = (
+            res.json().get(
                 "photos",
                 []
             )
+        )
 
-            if photos:
+        if not photos:
 
-                photo = photos[0]
+            return None
 
-                return (
-                    photo.get(
-                        "thumbnail_large",
-                        {}
-                    ).get("src")
+        photo = photos[0]
 
-                    or
+        return (
+            photo.get(
+                "thumbnail_large",
+                {}
+            ).get("src")
 
-                    photo.get(
-                        "thumbnail",
-                        {}
-                    ).get("src")
-                )
+            or
+
+            photo.get(
+                "thumbnail",
+                {}
+            ).get("src")
+        )
 
     except Exception:
-        pass
 
-    return None
+        return None
 
 
 # ============================================================
-# 6. FlightRadar24 詳細資料
+# 7. FlightRadar24 Details
 # ============================================================
 
 def fetch_direct_clickhandler(
@@ -315,146 +420,227 @@ def fetch_direct_clickhandler(
 
     try:
 
-        # ----------------------------------------------------
+        # --------------------------------------------------------
         # 建立 Flight object
-        # ----------------------------------------------------
+        # --------------------------------------------------------
 
-        if hasattr(flight_obj_or_id, "id"):
+        if hasattr(
+            flight_obj_or_id,
+            "id"
+        ):
 
-            flight_obj = flight_obj_or_id
+            flight_obj = (
+                flight_obj_or_id
+            )
 
         else:
 
             class DummyFlight:
 
                 def __init__(self, fid):
+
                     self.id = fid
 
             flight_obj = DummyFlight(
                 flight_obj_or_id
             )
 
-        # ----------------------------------------------------
-        # FR24 詳細資料
-        # ----------------------------------------------------
+        # --------------------------------------------------------
+        # 取得詳細資料
+        # --------------------------------------------------------
 
-        details = fr_api_inst.get_flight_details(
-            flight_obj
+        details = (
+            fr_api_inst.get_flight_details(
+                flight_obj
+            )
         )
 
-        if not details or not isinstance(details, dict):
+        if (
+            not details
+            or not isinstance(details, dict)
+        ):
+
             return None
 
-        # ----------------------------------------------------
+        # --------------------------------------------------------
         # Airport
-        # ----------------------------------------------------
+        # --------------------------------------------------------
 
-        airport = details.get(
-            "airport"
-        ) or {}
-
-        origin_obj = (
-            airport.get("origin")
+        airport = (
+            details.get(
+                "airport"
+            )
             or {}
-        ).get("code") or {}
+        )
 
-        destination_obj = (
-            airport.get("destination")
+        origin_data = (
+            airport.get(
+                "origin"
+            )
             or {}
-        ).get("code") or {}
+        )
+
+        destination_data = (
+            airport.get(
+                "destination"
+            )
+            or {}
+        )
+
+        origin_code = (
+            origin_data.get(
+                "code"
+            )
+            or {}
+        )
+
+        destination_code = (
+            destination_data.get(
+                "code"
+            )
+            or {}
+        )
 
         origin = (
-            origin_obj.get("iata")
-            or origin_obj.get("icao")
+            origin_code.get("iata")
+            or origin_code.get("icao")
+            or origin_data.get("name")
             or (
-                airport.get("origin")
-                or {}
-            ).get("name")
+                origin_data
+                .get("pluginData", {})
+                .get("details", {})
+                .get("name")
+            )
             or "未知"
         )
 
         destination = (
-            destination_obj.get("iata")
-            or destination_obj.get("icao")
+            destination_code.get("iata")
+            or destination_code.get("icao")
+            or destination_data.get("name")
             or (
-                airport.get("destination")
-                or {}
+                destination_data
+                .get("pluginData", {})
+                .get("details", {})
+                .get("name")
             )
-            .get("pluginData", {})
-            .get("details", {})
-            .get("name")
             or "未知"
         )
 
-        # ----------------------------------------------------
+        # --------------------------------------------------------
         # Identification
-        # ----------------------------------------------------
+        # --------------------------------------------------------
 
-        ident = details.get(
-            "identification"
-        ) or {}
+        ident = (
+            details.get(
+                "identification"
+            )
+            or {}
+        )
+
+        number_data = (
+            ident.get(
+                "number"
+            )
+            or {}
+        )
+
+        callsign_data = (
+            ident.get(
+                "callsign"
+            )
+            or {}
+        )
 
         f_num = (
-            (
-                ident.get("number")
-                or {}
-            ).get("default")
-
-            or
-
-            (
-                ident.get("callsign")
-                or {}
-            ).get("default")
-
+            number_data.get("default")
+            or number_data.get("display")
+            or callsign_data.get("default")
+            or callsign_data.get("display")
             or "未知"
         )
 
-        # ----------------------------------------------------
-        # Aircraft
-        # ----------------------------------------------------
+        callsign = (
+            callsign_data.get("default")
+            or callsign_data.get("display")
+            or ""
+        )
 
-        aircraft = details.get(
-            "aircraft"
-        ) or {}
+        # --------------------------------------------------------
+        # Aircraft
+        # --------------------------------------------------------
+
+        aircraft = (
+            details.get(
+                "aircraft"
+            )
+            or {}
+        )
 
         f_reg = (
             aircraft.get(
                 "registration"
             )
+            or aircraft.get(
+                "registrationNumber"
+            )
             or "未知"
         )
 
         aircraft_model = (
-            aircraft.get("model")
+            aircraft.get(
+                "model"
+            )
             or {}
         )
 
-        ac_code = (
-            aircraft_model.get("code")
-            or "未知"
+        if isinstance(
+            aircraft_model,
+            dict
+        ):
+
+            ac_code = (
+                aircraft_model.get("code")
+                or aircraft_model.get("text")
+                or aircraft_model.get("name")
+                or "未知"
+            )
+
+        else:
+
+            ac_code = str(
+                aircraft_model
+            )
+
+        # --------------------------------------------------------
+        # Time
+        # --------------------------------------------------------
+
+        time_data = (
+            details.get(
+                "time"
+            )
+            or {}
         )
 
-        # ----------------------------------------------------
-        # 時間
-        # ----------------------------------------------------
-
-        time_data = details.get(
-            "time"
-        ) or {}
-
         scheduled = (
-            time_data.get("scheduled")
+            time_data.get(
+                "scheduled"
+            )
             or {}
         )
 
         estimated = (
-            time_data.get("estimated")
+            time_data.get(
+                "estimated"
+            )
             or {}
         )
 
         real = (
-            time_data.get("real")
+            time_data.get(
+                "real"
+            )
             or {}
         )
 
@@ -470,25 +656,31 @@ def fetch_direct_clickhandler(
             "departure"
         )
 
-        # 優先 estimated -> scheduled -> real
+        # 優先：
+        # estimated -> scheduled -> real
+
         dep_ts = (
             etd_ts
             or std_ts
             or atd_ts
         )
 
-        dep_full = format_full_datetime(
-            dep_ts
+        dep_full = (
+            format_full_datetime(
+                dep_ts
+            )
         )
 
-        # ----------------------------------------------------
-        # 飛機圖片
-        # ----------------------------------------------------
+        # --------------------------------------------------------
+        # Image
+        # --------------------------------------------------------
 
         image_url = None
 
         images = (
-            aircraft.get("images")
+            aircraft.get(
+                "images"
+            )
             or {}
         )
 
@@ -499,42 +691,195 @@ def fetch_direct_clickhandler(
         )
 
         if (
-            isinstance(large_images, list)
+            isinstance(
+                large_images,
+                list
+            )
             and large_images
         ):
 
-            image_url = (
+            first_image = (
                 large_images[0]
-                .get("src")
             )
 
-        # FR24 沒圖片 -> PlaneSpotters
+            if isinstance(
+                first_image,
+                dict
+            ):
+
+                image_url = (
+                    first_image.get(
+                        "src"
+                    )
+                )
+
+        # --------------------------------------------------------
+        # PlaneSpotters fallback
+        # --------------------------------------------------------
+
         if (
             not image_url
             and f_reg != "未知"
         ):
 
-            image_url = fetch_planespotters_image(
-                f_reg
+            image_url = (
+                fetch_planespotters_image(
+                    f_reg
+                )
             )
 
         return {
+
             "origin": origin,
+
             "destination": destination,
+
             "f_num": f_num,
+
             "f_reg": f_reg,
+
+            "callsign": callsign,
+
             "ac_code": ac_code,
+
             "dep_ts": dep_ts,
+
             "dep_time": dep_full,
+
             "image_url": image_url,
         }
 
     except Exception:
+
         return None
 
 
 # ============================================================
-# 7. 建立高速航班索引
+# 8. 從 Flight object 取得所有可能識別資料
+# ============================================================
+
+def extract_flight_values(
+    flight
+) -> dict:
+
+    values = {
+        "registration": set(),
+        "number": set(),
+        "callsign": set(),
+        "all": set(),
+    }
+
+    if not flight:
+
+        return values
+
+    possible_registration = [
+        "registration",
+        "aircraft_registration",
+        "aircraftRegistration",
+        "reg",
+    ]
+
+    possible_number = [
+        "number",
+        "flight_number",
+        "flightNumber",
+    ]
+
+    possible_callsign = [
+        "callsign",
+        "callSign",
+    ]
+
+    for attr in possible_registration:
+
+        try:
+
+            value = getattr(
+                flight,
+                attr,
+                None
+            )
+
+        except Exception:
+
+            value = None
+
+        value = clean_value(
+            value
+        )
+
+        if value:
+
+            values[
+                "registration"
+            ].add(value)
+
+            values[
+                "all"
+            ].add(value)
+
+    for attr in possible_number:
+
+        try:
+
+            value = getattr(
+                flight,
+                attr,
+                None
+            )
+
+        except Exception:
+
+            value = None
+
+        value = clean_value(
+            value
+        )
+
+        if value:
+
+            values[
+                "number"
+            ].add(value)
+
+            values[
+                "all"
+            ].add(value)
+
+    for attr in possible_callsign:
+
+        try:
+
+            value = getattr(
+                flight,
+                attr,
+                None
+            )
+
+        except Exception:
+
+            value = None
+
+        value = clean_value(
+            value
+        )
+
+        if value:
+
+            values[
+                "callsign"
+            ].add(value)
+
+            values[
+                "all"
+            ].add(value)
+
+    return values
+
+
+# ============================================================
+# 9. 建立高速航班索引
 # ============================================================
 
 def build_flight_index(
@@ -542,12 +887,15 @@ def build_flight_index(
 ) -> dict:
 
     """
-    將目前所有航班建立成 Hash Map。
+    建立多重 Hash Map。
 
-    不再每個 target 都掃一次全部航班。
+    不再只保存一架。
+    同一 flight number 可能同時存在多個結果，
+    因此使用 list。
     """
 
     index = {
+
         "registration": {},
         "number": {},
         "callsign": {},
@@ -556,92 +904,119 @@ def build_flight_index(
 
     for flight in all_flights:
 
-        f_num = (
-            getattr(
-                flight,
-                "number",
-                ""
+        values = (
+            extract_flight_values(
+                flight
             )
-            or ""
-        ).upper().strip()
+        )
 
-        f_callsign = (
-            getattr(
-                flight,
-                "callsign",
-                ""
+        # --------------------------------------------------------
+        # Registration
+        # --------------------------------------------------------
+
+        for value in values[
+            "registration"
+        ]:
+
+            index[
+                "registration"
+            ].setdefault(
+                value,
+                []
+            ).append(
+                flight
             )
-            or ""
-        ).upper().strip()
 
-        f_reg = (
-            getattr(
-                flight,
-                "registration",
-                ""
-            )
-            or ""
-        ).upper().strip()
-
-        # ----------------------------------------------------
-        # 精準 Registration
-        # ----------------------------------------------------
-
-        if f_reg:
-            index["registration"][
-                f_reg
-            ] = flight
-
-            normalized = normalize_target(
-                f_reg
+            normalized = (
+                normalize_target(
+                    value
+                )
             )
 
             if normalized:
-                index["normalized"][
-                    normalized
-                ] = flight
 
-        # ----------------------------------------------------
-        # 精準 Flight Number
-        # ----------------------------------------------------
+                index[
+                    "normalized"
+                ].setdefault(
+                    normalized,
+                    []
+                ).append(
+                    flight
+                )
 
-        if f_num:
-            index["number"][
-                f_num
-            ] = flight
+        # --------------------------------------------------------
+        # Flight number
+        # --------------------------------------------------------
 
-            normalized = normalize_target(
-                f_num
+        for value in values[
+            "number"
+        ]:
+
+            index[
+                "number"
+            ].setdefault(
+                value,
+                []
+            ).append(
+                flight
+            )
+
+            normalized = (
+                normalize_target(
+                    value
+                )
             )
 
             if normalized:
-                index["normalized"][
-                    normalized
-                ] = flight
 
-        # ----------------------------------------------------
-        # 精準 Callsign
-        # ----------------------------------------------------
+                index[
+                    "normalized"
+                ].setdefault(
+                    normalized,
+                    []
+                ).append(
+                    flight
+                )
 
-        if f_callsign:
-            index["callsign"][
-                f_callsign
-            ] = flight
+        # --------------------------------------------------------
+        # Callsign
+        # --------------------------------------------------------
 
-            normalized = normalize_target(
-                f_callsign
+        for value in values[
+            "callsign"
+        ]:
+
+            index[
+                "callsign"
+            ].setdefault(
+                value,
+                []
+            ).append(
+                flight
+            )
+
+            normalized = (
+                normalize_target(
+                    value
+                )
             )
 
             if normalized:
-                index["normalized"][
-                    normalized
-                ] = flight
+
+                index[
+                    "normalized"
+                ].setdefault(
+                    normalized,
+                    []
+                ).append(
+                    flight
+                )
 
     return index
 
 
 # ============================================================
-# 8. 精準搜尋單一目標
+# 10. 精準搜尋單一目標
 # ============================================================
 
 def find_target_in_index(
@@ -655,65 +1030,99 @@ def find_target_in_index(
         .strip()
     )
 
-    target_normalized = normalize_target(
-        target_upper
+    target_normalized = (
+        normalize_target(
+            target_upper
+        )
     )
 
     # --------------------------------------------------------
-    # 第一優先：Registration
+    # Registration
     # --------------------------------------------------------
 
-    flight = (
-        flight_index["registration"]
-        .get(target_upper)
+    candidates = (
+        flight_index[
+            "registration"
+        ].get(
+            target_upper,
+            []
+        )
     )
 
-    if flight:
-        return flight, "EXACT_REGISTRATION"
+    if candidates:
+
+        return (
+            candidates[0],
+            "EXACT_REGISTRATION"
+        )
 
     # --------------------------------------------------------
-    # 第二優先：Flight Number
+    # Flight Number
     # --------------------------------------------------------
 
-    flight = (
-        flight_index["number"]
-        .get(target_upper)
+    candidates = (
+        flight_index[
+            "number"
+        ].get(
+            target_upper,
+            []
+        )
     )
 
-    if flight:
-        return flight, "EXACT_FLIGHT_NUMBER"
+    if candidates:
+
+        return (
+            candidates[0],
+            "EXACT_FLIGHT_NUMBER"
+        )
 
     # --------------------------------------------------------
-    # 第三優先：Callsign
+    # Callsign
     # --------------------------------------------------------
 
-    flight = (
-        flight_index["callsign"]
-        .get(target_upper)
+    candidates = (
+        flight_index[
+            "callsign"
+        ].get(
+            target_upper,
+            []
+        )
     )
 
-    if flight:
-        return flight, "EXACT_CALLSIGN"
+    if candidates:
+
+        return (
+            candidates[0],
+            "EXACT_CALLSIGN"
+        )
 
     # --------------------------------------------------------
-    # 第四優先：去掉 - 和空白
+    # Normalized
     # --------------------------------------------------------
 
     if target_normalized:
 
-        flight = (
-            flight_index["normalized"]
-            .get(target_normalized)
+        candidates = (
+            flight_index[
+                "normalized"
+            ].get(
+                target_normalized,
+                []
+            )
         )
 
-        if flight:
-            return flight, "NORMALIZED_MATCH"
+        if candidates:
+
+            return (
+                candidates[0],
+                "NORMALIZED_MATCH"
+            )
 
     return None, None
 
 
 # ============================================================
-# 9. 將 Flight object + details 組成結果
+# 11. 建立結果
 # ============================================================
 
 def build_result(
@@ -725,28 +1134,49 @@ def build_result(
 ) -> dict | None:
 
     if not details:
+
         return None
 
-    orig = details["origin"]
-    dest = details["destination"]
-
-    is_tw_origin = check_is_taiwan(
-        orig
+    orig = (
+        details.get(
+            "origin",
+            "未知"
+        )
     )
 
-    dep_ts = details["dep_ts"]
+    dest = (
+        details.get(
+            "destination",
+            "未知"
+        )
+    )
+
+    is_tw_origin = (
+        check_is_taiwan(
+            orig
+        )
+    )
+
+    dep_ts = details.get(
+        "dep_ts"
+    )
 
     current_ts = int(
         time.time()
     )
 
-    # 是否為未來航班
     is_future = bool(
         dep_ts
-        and int(dep_ts) > current_ts
+        and int(dep_ts)
+        > current_ts
     )
 
-    f_num = details["f_num"]
+    f_num = (
+        details.get(
+            "f_num"
+        )
+        or "未知"
+    )
 
     if f_num == "未知":
 
@@ -764,7 +1194,12 @@ def build_result(
             or target_raw
         )
 
-    f_reg = details["f_reg"]
+    f_reg = (
+        details.get(
+            "f_reg"
+        )
+        or "未知"
+    )
 
     if f_reg == "未知":
 
@@ -777,24 +1212,41 @@ def build_result(
             or target_raw
         )
 
+    callsign = (
+        details.get(
+            "callsign"
+        )
+        or getattr(
+            flight,
+            "callsign",
+            ""
+        )
+        or ""
+    )
+
     return {
+
         "target": target_raw,
 
         "f_num": f_num,
 
         "f_reg": f_reg,
 
-        "ac_code": details[
-            "ac_code"
-        ],
+        "callsign": callsign,
+
+        "ac_code": details.get(
+            "ac_code",
+            "未知"
+        ),
 
         "route": (
             f"{orig} ➔ {dest}"
         ),
 
-        "dep_time": details[
-            "dep_time"
-        ],
+        "dep_time": details.get(
+            "dep_time",
+            "未知"
+        ),
 
         "dep_ts": dep_ts,
 
@@ -804,9 +1256,9 @@ def build_result(
 
         "is_future": is_future,
 
-        "image_url": details[
+        "image_url": details.get(
             "image_url"
-        ],
+        ),
 
         "source": source,
 
@@ -815,7 +1267,269 @@ def build_result(
 
 
 # ============================================================
-# 10. Web API 補查
+# 12. Web Search 結果驗證
+# ============================================================
+
+def search_item_matches_target(
+    target: str,
+    item: dict
+) -> tuple[bool, str]:
+
+    target_norm = (
+        normalize_target(
+            target
+        )
+    )
+
+    exact_fields = []
+    normalized_fields = []
+
+    def collect(
+        value,
+        field_name
+    ):
+
+        if value is None:
+
+            return
+
+        if isinstance(
+            value,
+            dict
+        ):
+
+            for v in value.values():
+
+                collect(
+                    v,
+                    field_name
+                )
+
+            return
+
+        if isinstance(
+            value,
+            list
+        ):
+
+            for v in value:
+
+                collect(
+                    v,
+                    field_name
+                )
+
+            return
+
+        text = (
+            str(value)
+            .upper()
+            .strip()
+        )
+
+        if not text:
+
+            return
+
+        exact_fields.append(
+            (
+                field_name,
+                text
+            )
+        )
+
+        normalized_fields.append(
+            (
+                field_name,
+                normalize_target(
+                    text
+                )
+            )
+        )
+
+    # --------------------------------------------------------
+    # Search result 可能存在的欄位
+    # --------------------------------------------------------
+
+    collect(
+        item.get(
+            "registration"
+        ),
+        "registration"
+    )
+
+    collect(
+        item.get(
+            "aircraft_registration"
+        ),
+        "aircraft_registration"
+    )
+
+    collect(
+        item.get(
+            "aircraft"
+        ),
+        "aircraft"
+    )
+
+    collect(
+        item.get(
+            "identification"
+        ),
+        "identification"
+    )
+
+    collect(
+        item.get(
+            "number"
+        ),
+        "number"
+    )
+
+    collect(
+        item.get(
+            "callsign"
+        ),
+        "callsign"
+    )
+
+    collect(
+        item.get(
+            "title"
+        ),
+        "title"
+    )
+
+    collect(
+        item.get(
+            "label"
+        ),
+        "label"
+    )
+
+    # --------------------------------------------------------
+    # 精準
+    # --------------------------------------------------------
+
+    for field, value in exact_fields:
+
+        if value == target.upper():
+
+            return (
+                True,
+                f"WEB_EXACT_{field.upper()}"
+            )
+
+    # --------------------------------------------------------
+    # Normalized
+    # --------------------------------------------------------
+
+    if target_norm:
+
+        for field, value in normalized_fields:
+
+            if (
+                value
+                and value == target_norm
+            ):
+
+                return (
+                    True,
+                    f"WEB_NORMALIZED_{field.upper()}"
+                )
+
+    return False, ""
+
+
+# ============================================================
+# 13. 驗證 Details
+# ============================================================
+
+def details_match_target(
+    target: str,
+    details: dict
+) -> tuple[bool, str]:
+
+    if not details:
+
+        return False, ""
+
+    target_upper = (
+        target.upper().strip()
+    )
+
+    target_norm = (
+        normalize_target(
+            target_upper
+        )
+    )
+
+    values = [
+
+        (
+            "registration",
+            details.get(
+                "f_reg",
+                ""
+            )
+        ),
+
+        (
+            "flight_number",
+            details.get(
+                "f_num",
+                ""
+            )
+        ),
+
+        (
+            "callsign",
+            details.get(
+                "callsign",
+                ""
+            )
+        ),
+    ]
+
+    for field, value in values:
+
+        if not value:
+
+            continue
+
+        value_upper = (
+            str(value)
+            .upper()
+            .strip()
+        )
+
+        if (
+            value_upper
+            == target_upper
+        ):
+
+            return (
+                True,
+                f"WEB_DETAILS_EXACT_{field.upper()}"
+            )
+
+        if (
+            normalize_target(
+                value_upper
+            )
+            == target_norm
+        ):
+
+            return (
+                True,
+                f"WEB_DETAILS_NORMALIZED_{field.upper()}"
+            )
+
+    return False, ""
+
+
+# ============================================================
+# 14. Web API 補查
 # ============================================================
 
 def web_search_target(
@@ -825,9 +1539,15 @@ def web_search_target(
 ) -> dict | None:
 
     """
-    只給第一階段沒有找到的目標使用。
+    第二階段搜尋。
 
-    Web Search -> live ID -> get_flight_details
+    與舊版最大的差異：
+
+    1. 不限制 type == live
+    2. 搜尋結果本身先驗證
+    3. 再取得 details
+    4. details 再驗證一次
+    5. 可以檢查多個候選
     """
 
     target_raw = (
@@ -836,70 +1556,187 @@ def web_search_target(
         .strip()
     )
 
+    if not target_raw:
+
+        return None
+
     try:
+
+        encoded_target = quote(
+            target_raw,
+            safe=""
+        )
 
         search_url = (
             "https://www.flightradar24.com/"
             "v1/search/web/find"
-            f"?query={target_raw}"
+            f"?query={encoded_target}"
         )
 
         res = http_session.get(
             search_url,
             headers=get_headers(),
-            timeout=4
+            timeout=5
         )
 
         if res.status_code != 200:
+
             return None
 
         data = res.json()
 
-        results = data.get(
-            "results",
-            []
+        results = (
+            data.get(
+                "results",
+                []
+            )
         )
 
-        if not results:
+        if not isinstance(
+            results,
+            list
+        ):
+
             return None
 
-        # ----------------------------------------------------
-        # 精準選擇 live 結果
-        # ----------------------------------------------------
+        if not results:
+
+            return None
 
         candidates = []
 
+        # ====================================================
+        # 第一輪：搜尋結果本身判斷
+        # ====================================================
+
         for item in results:
 
-            if item.get("type") != "live":
+            if not isinstance(
+                item,
+                dict
+            ):
+
                 continue
 
             live_id = str(
-                item.get("id", "")
+                item.get(
+                    "id",
+                    ""
+                )
             ).strip()
 
             if not live_id:
+
                 continue
 
-            candidates.append(
-                (
-                    live_id,
+            matched, match_type = (
+                search_item_matches_target(
+                    target_raw,
                     item
                 )
             )
 
+            # ------------------------------------------------
+            # 精準匹配優先
+            # ------------------------------------------------
+
+            if matched:
+
+                candidates.append(
+                    (
+                        0,
+                        live_id,
+                        item,
+                        match_type
+                    )
+                )
+
+                continue
+
+            # ------------------------------------------------
+            # 如果搜尋 API 沒提供識別欄位，
+            # 但 type 是 live，也保留候選。
+            #
+            # 這是為了處理 FR24 搜尋 API
+            # 回傳欄位不完整的情況。
+            # ------------------------------------------------
+
+            item_type = str(
+                item.get(
+                    "type",
+                    ""
+                )
+            ).lower()
+
+            if item_type == "live":
+
+                candidates.append(
+                    (
+                        1,
+                        live_id,
+                        item,
+                        "WEB_LIVE_CANDIDATE"
+                    )
+                )
+
         if not candidates:
-            return None
 
-        # ----------------------------------------------------
-        # 逐個 live candidate 驗證
-        # ----------------------------------------------------
+            # =================================================
+            # 第二種方式：
+            # 即使搜尋結果沒有 type=live，
+            # 只要有 ID 也保留前幾個候選
+            # =================================================
 
-        target_norm = normalize_target(
-            target_raw
+            for item in results:
+
+                if not isinstance(
+                    item,
+                    dict
+                ):
+
+                    continue
+
+                live_id = str(
+                    item.get(
+                        "id",
+                        ""
+                    )
+                ).strip()
+
+                if not live_id:
+
+                    continue
+
+                candidates.append(
+                    (
+                        2,
+                        live_id,
+                        item,
+                        "WEB_ID_CANDIDATE"
+                    )
+                )
+
+                if len(candidates) >= 5:
+
+                    break
+
+        # 最多驗證 5 個候選
+        candidates.sort(
+            key=lambda x: x[0]
         )
 
-        for live_id, item in candidates:
+        candidates = candidates[:5]
+
+        # ====================================================
+        # 逐個 candidate 取得 details
+        # ====================================================
+
+        for (
+            priority,
+            live_id,
+            item,
+            search_match_type
+        ) in candidates:
 
             target_obj = (
                 flight_map_by_id.get(
@@ -908,95 +1745,71 @@ def web_search_target(
                 or live_id
             )
 
-            details = fetch_direct_clickhandler(
-                fr_api_inst,
-                target_obj
+            details = (
+                fetch_direct_clickhandler(
+                    fr_api_inst,
+                    target_obj
+                )
             )
 
             if not details:
+
                 continue
 
-            # ------------------------------------------------
-            # 驗證搜尋結果是否真的對應 target
-            # ------------------------------------------------
+            # =================================================
+            # Details 驗證
+            # =================================================
 
-            values = [
-                details.get("f_num", ""),
-                details.get("f_reg", ""),
-            ]
-
-            # 如果 API 有 callsign
-            identification = (
-                item.get(
-                    "identification"
-                )
-                or {}
-            )
-
-            values.append(
-                identification.get(
-                    "callsign",
-                    ""
+            matched, detail_match_type = (
+                details_match_target(
+                    target_raw,
+                    details
                 )
             )
 
-            exact = False
-            normalized_match = False
-
-            for value in values:
-
-                value = (
-                    str(value)
-                    .upper()
-                    .strip()
-                )
-
-                if not value:
-                    continue
-
-                if value == target_raw:
-                    exact = True
-                    break
-
-                if (
-                    normalize_target(value)
-                    == target_norm
-                ):
-                    normalized_match = True
-
-            # ------------------------------------------------
-            # 搜尋結果如果沒有直接可驗證欄位
-            # 仍接受 live 結果，但降低來源標示
-            # ------------------------------------------------
-
-            if exact:
+            if matched:
 
                 return build_result(
                     target_raw,
                     target_obj,
                     details,
-                    "🔍 Web API 精準補查",
+                    "🔍 FR24 Web API 補查",
+                    detail_match_type
+                )
+
+            # =================================================
+            # 如果搜尋結果已經是精準匹配，
+            # 而 details 沒有識別欄位，
+            # 仍接受。
+            #
+            # 這是為了避免 FR24 details API
+            # 某些資料欄位缺失造成漏抓。
+            # =================================================
+
+            if (
+                priority == 0
+                and search_match_type.startswith(
                     "WEB_EXACT"
                 )
-
-            if normalized_match:
+            ):
 
                 return build_result(
                     target_raw,
                     target_obj,
                     details,
-                    "🔍 Web API 標準化匹配",
-                    "WEB_NORMALIZED"
+                    "🔍 FR24 Web API 搜尋結果精準匹配",
+                    search_match_type
                 )
 
         return None
 
     except Exception:
+
         return None
 
 
 # ============================================================
-# 11. Discord
+# 15. Discord
 # ============================================================
 
 def send_discord_webhook(
@@ -1006,7 +1819,7 @@ def send_discord_webhook(
     if not DISCORD_WEBHOOK_URL:
 
         print(
-            "⚠️ 未設定 DISCORD Webhook URL，"
+            "⚠️ 未設定 Discord Webhook URL，"
             "跳過推播。"
         )
 
@@ -1059,10 +1872,10 @@ def send_discord_webhook(
                     ),
                     "inline": False,
                 },
-
             ],
 
             "footer": {
+
                 "text": (
                     "FR24 智慧航班監測系統"
                     " • "
@@ -1071,15 +1884,20 @@ def send_discord_webhook(
             },
         }
 
-        if f.get("image_url"):
+        if f.get(
+            "image_url"
+        ):
 
             embed["image"] = {
                 "url": f["image_url"]
             }
 
-        embeds.append(embed)
+        embeds.append(
+            embed
+        )
 
     # Discord 一次最多 10 embeds
+
     for i in range(
         0,
         len(embeds),
@@ -1117,19 +1935,19 @@ def send_discord_webhook(
 
                 print(
                     f"❌ Discord 發送失敗，"
-                    f"HTTP 狀態碼: "
+                    f"HTTP 狀態碼："
                     f"{res.status_code}"
                 )
 
         except Exception as e:
 
             print(
-                f"❌ Discord 發送異常: {e}"
+                f"❌ Discord 發送異常：{e}"
             )
 
 
 # ============================================================
-# 12. 第一階段：一次取得全部航班
+# 16. 第一階段：高速掃描
 # ============================================================
 
 def fast_scan(
@@ -1144,9 +1962,9 @@ def fast_scan(
 
     start_time = time.time()
 
-    # --------------------------------------------------------
+    # ========================================================
     # 只呼叫一次 get_flights()
-    # --------------------------------------------------------
+    # ========================================================
 
     try:
 
@@ -1168,9 +1986,9 @@ def fast_scan(
         f"{len(snapshot)} 架即時航班"
     )
 
-    # --------------------------------------------------------
-    # 建立 ID map
-    # --------------------------------------------------------
+    # ========================================================
+    # ID map
+    # ========================================================
 
     flight_map_by_id = {
 
@@ -1191,14 +2009,16 @@ def fast_scan(
         )
     }
 
-    # --------------------------------------------------------
+    # ========================================================
     # 建立索引
-    # --------------------------------------------------------
+    # ========================================================
 
     index_start = time.time()
 
-    flight_index = build_flight_index(
-        snapshot
+    flight_index = (
+        build_flight_index(
+            snapshot
+        )
     )
 
     print(
@@ -1206,9 +2026,9 @@ def fast_scan(
         f"({time.time() - index_start:.2f} 秒)"
     )
 
-    # --------------------------------------------------------
-    # 直接查詢 targets
-    # --------------------------------------------------------
+    # ========================================================
+    # 查詢 targets
+    # ========================================================
 
     matched_dict = {}
 
@@ -1231,16 +2051,51 @@ def fast_scan(
 
             continue
 
-        # ----------------------------------------------------
-        # 只有真正匹配的航班才取得詳細資料
-        # ----------------------------------------------------
+        # ====================================================
+        # 取得詳細資料
+        # ====================================================
 
-        details = fetch_direct_clickhandler(
-            fr_api_inst,
-            flight
+        details = (
+            fetch_direct_clickhandler(
+                fr_api_inst,
+                flight
+            )
         )
 
         if not details:
+
+            # 詳細資料失敗，
+            # 不直接判定不存在。
+            unmatched_targets.append(
+                target
+            )
+
+            continue
+
+        # ====================================================
+        # 再驗證一次
+        # ====================================================
+
+        matched, detail_type = (
+            details_match_target(
+                target,
+                details
+            )
+        )
+
+        # 如果 details 沒有足夠識別資料，
+        # 但第一階段 index 已經精準命中，
+        # 還是保留。
+        if (
+            not matched
+            and match_type
+            not in [
+                "EXACT_REGISTRATION",
+                "EXACT_FLIGHT_NUMBER",
+                "EXACT_CALLSIGN",
+                "NORMALIZED_MATCH",
+            ]
+        ):
 
             unmatched_targets.append(
                 target
@@ -1253,7 +2108,11 @@ def fast_scan(
             flight,
             details,
             "📡 FR24 直播廣播",
-            match_type
+            (
+                detail_type
+                if matched
+                else match_type
+            )
         )
 
         if result:
@@ -1267,7 +2126,7 @@ def fast_scan(
                 f" -> "
                 f"{result['f_num']} "
                 f"({result['f_reg']}) "
-                f"[{match_type}]"
+                f"[{result['match_type']}]"
             )
 
         else:
@@ -1292,7 +2151,7 @@ def fast_scan(
     )
 
     print(
-        f"   ❓ 未找到："
+        f"   ❓ 待補查："
         f"{len(unmatched_targets)}"
     )
 
@@ -1304,7 +2163,7 @@ def fast_scan(
 
 
 # ============================================================
-# 13. 第二階段：只補查未找到的目標
+# 17. 第二階段：高速 Web API 補查
 # ============================================================
 
 def deep_scan_unmatched(
@@ -1319,21 +2178,21 @@ def deep_scan_unmatched(
 
     print(
         "\n🔍 第二階段："
-        f"開始補查 {len(unmatched_targets)} 架未找到目標..."
+        f"開始補查 "
+        f"{len(unmatched_targets)} "
+        f"架未找到目標..."
     )
 
     start_time = time.time()
 
     results = {}
 
-    # --------------------------------------------------------
-    # 不需要 15 / 10 輪
-    #
-    # 只對真正未找到的目標進行 Web API
-    # --------------------------------------------------------
+    # ========================================================
+    # 提高並行數
+    # ========================================================
 
     max_workers = min(
-        6,
+        12,
         max(
             1,
             len(unmatched_targets)
@@ -1341,8 +2200,14 @@ def deep_scan_unmatched(
     )
 
     print(
-        f"🚀 開啟 {max_workers} 個補查線程"
+        f"🚀 開啟 "
+        f"{max_workers} "
+        f"個 Web API 補查線程"
     )
+
+    # ========================================================
+    # 平行搜尋
+    # ========================================================
 
     with ThreadPoolExecutor(
         max_workers=max_workers
@@ -1357,7 +2222,8 @@ def deep_scan_unmatched(
                 fr_api_inst
             ): target
 
-            for target in unmatched_targets
+            for target
+            in unmatched_targets
         }
 
         for future in as_completed(
@@ -1383,23 +2249,28 @@ def deep_scan_unmatched(
                     ] = result
 
                     print(
-                        f"  └─ 🟢 [補查成功] "
-                        f"{target} -> "
+                        f"  └─ 🟢 "
+                        f"[補查成功] "
+                        f"{target}"
+                        f" -> "
                         f"{result['f_num']} "
-                        f"({result['route']})"
+                        f"({result['f_reg']}) "
+                        f"[{result['match_type']}]"
                     )
 
                 else:
 
                     print(
-                        f"  └─ ⚪ [無結果] "
+                        f"  └─ ⚪ "
+                        f"[無結果] "
                         f"{target}"
                     )
 
             except Exception as e:
 
                 print(
-                    f"  └─ ❌ [補查錯誤] "
+                    f"  └─ ❌ "
+                    f"[補查錯誤] "
                     f"{target}: {e}"
                 )
 
@@ -1427,23 +2298,13 @@ def deep_scan_unmatched(
 
 
 # ============================================================
-# 14. 最終篩選
+# 18. 最終篩選：台灣起飛
 # ============================================================
 
 def filter_taiwan_departures(
     matched_dict: dict,
     minutes_ahead: int = 10
 ):
-
-    # --------------------------------------------------------
-    # 修正原程式時間邏輯
-    #
-    # 原本：
-    # now - 10分鐘 -> now
-    #
-    # 現在：
-    # now -> now + 10分鐘
-    # --------------------------------------------------------
 
     now_ts = int(
         time.time()
@@ -1461,6 +2322,7 @@ def filter_taiwan_departures(
         if not f.get(
             "is_taiwan_origin"
         ):
+
             continue
 
         dep_ts = f.get(
@@ -1468,6 +2330,7 @@ def filter_taiwan_departures(
         )
 
         if not dep_ts:
+
             continue
 
         try:
@@ -1490,7 +2353,6 @@ def filter_taiwan_departures(
                 f
             )
 
-    # 起飛時間排序
     taiwan_departures.sort(
         key=lambda x: (
             x.get(
@@ -1504,7 +2366,7 @@ def filter_taiwan_departures(
 
 
 # ============================================================
-# 15. 主程式
+# 19. 主程式
 # ============================================================
 
 def main():
@@ -1512,7 +2374,7 @@ def main():
     program_start = time.time()
 
     print(
-        "=" * 65
+        "=" * 70
     )
 
     print(
@@ -1520,12 +2382,12 @@ def main():
     )
 
     print(
-        "=" * 65
+        "=" * 70
     )
 
-    # --------------------------------------------------------
+    # ========================================================
     # 沒有 targets
-    # --------------------------------------------------------
+    # ========================================================
 
     if not TARGETS:
 
@@ -1541,9 +2403,9 @@ def main():
         f"{len(TARGETS)} 架"
     )
 
-    # --------------------------------------------------------
+    # ========================================================
     # 建立 FR24
-    # --------------------------------------------------------
+    # ========================================================
 
     try:
 
@@ -1554,7 +2416,8 @@ def main():
     except Exception as e:
 
         print(
-            f"❌ 無法建立 FlightRadar24API："
+            f"❌ 無法建立 "
+            f"FlightRadar24API："
             f"{e}"
         )
 
@@ -1573,9 +2436,15 @@ def main():
         fr_api_inst
     )
 
+    first_stage_count = (
+        len(matched_dict)
+    )
+
     # ========================================================
     # 第二階段
     # ========================================================
+
+    deep_count = 0
 
     if unmatched_targets:
 
@@ -1587,12 +2456,29 @@ def main():
             )
         )
 
+        deep_count = (
+            len(deep_results)
+        )
+
         matched_dict.update(
             deep_results
         )
 
     # ========================================================
-    # 最終篩選
+    # 最終統計
+    # ========================================================
+
+    final_matched_count = (
+        len(matched_dict)
+    )
+
+    final_unmatched = (
+        len(TARGETS)
+        - final_matched_count
+    )
+
+    # ========================================================
+    # 台灣起飛
     # ========================================================
 
     taiwan_departures = (
@@ -1602,22 +2488,18 @@ def main():
         )
     )
 
-    # ========================================================
-    # 統計
-    # ========================================================
-
-    final_unmatched = (
-        len(TARGETS)
-        - len(matched_dict)
-    )
-
     total_elapsed = (
         time.time()
         - program_start
     )
 
+    # ========================================================
+    # 總結
+    # ========================================================
+
     print(
-        "\n" + "=" * 65
+        "\n"
+        + "=" * 70
     )
 
     print(
@@ -1625,21 +2507,31 @@ def main():
     )
 
     print(
-        "=" * 65
+        "=" * 70
     )
 
     print(
-        f" • 監控目標數："
+        f" • 🎯 監控目標數："
         f"{len(TARGETS)} 架"
     )
 
     print(
-        f" • 成功定位："
-        f"{len(matched_dict)} 架"
+        f" • 📡 第一階段直接找到："
+        f"{first_stage_count} 架"
     )
 
     print(
-        f" • ❌ 未找到："
+        f" • 🔍 第二階段 Web API 補查："
+        f"{deep_count} 架"
+    )
+
+    print(
+        f" • 🟢 最終成功定位："
+        f"{final_matched_count} 架"
+    )
+
+    print(
+        f" • ❌ 最終未找到："
         f"{final_unmatched} 架"
     )
 
@@ -1655,8 +2547,28 @@ def main():
     )
 
     print(
-        "=" * 65
+        "=" * 70
     )
+
+    # ========================================================
+    # 如果達到預期 44 架
+    # ========================================================
+
+    if final_matched_count >= 44:
+
+        print(
+            "\n🎉 已成功定位至少 44 架監控目標！"
+        )
+
+    else:
+
+        print(
+            "\n⚠️ 目前仍未達到預期的 44 架。"
+        )
+
+        print(
+            "   建議查看下面的未找到清單。"
+        )
 
     # ========================================================
     # 顯示台灣起飛航班
@@ -1676,6 +2588,7 @@ def main():
                 f" | {f['ac_code']}"
                 f" | {f['route']}"
                 f" | {f['dep_time']}"
+                f" | {f['match_type']}"
             )
 
         # ----------------------------------------------------
@@ -1698,27 +2611,36 @@ def main():
     # 未找到清單
     # ========================================================
 
-    if unmatched_targets:
+    actually_unmatched = [
 
-        actually_unmatched = [
-            t
-            for t in TARGETS
-            if t not in matched_dict
-        ]
+        t
 
-        if actually_unmatched:
+        for t in TARGETS
+
+        if t not in matched_dict
+    ]
+
+    if actually_unmatched:
+
+        print(
+            "\n❌ 以下目標目前沒有取得資料："
+        )
+
+        for target in actually_unmatched:
 
             print(
-                "\n❌ 以下目標目前沒有取得資料："
+                f"   - {target}"
             )
 
-            for target in (
-                actually_unmatched
-            ):
+    else:
 
-                print(
-                    f"   - {target}"
-                )
+        print(
+            "\n🎉 所有監控目標都已成功定位！"
+        )
+
+    # ========================================================
+    # 完成
+    # ========================================================
 
     print(
         "\n✅ 程式執行完成。"
@@ -1726,8 +2648,9 @@ def main():
 
 
 # ============================================================
-# 16. Entry Point
+# 20. Entry Point
 # ============================================================
 
 if __name__ == "__main__":
+
     main()
