@@ -195,7 +195,6 @@ def fetch_direct_clickhandler(fr_api_inst, flight_obj_or_id) -> dict | None:
         f_reg = ac.get("registration") or "未知"
         ac_code = (ac.get("model") or {}).get("code") or "未知"
 
-        # 降落系統：擷取「抵達時間」
         time_data = details.get("time") or {}
         sta_ts = (time_data.get("scheduled") or {}).get("arrival")
         eta_ts = (time_data.get("estimated") or {}).get("arrival")
@@ -203,7 +202,6 @@ def fetch_direct_clickhandler(fr_api_inst, flight_obj_or_id) -> dict | None:
         arr_ts = eta_ts or ata_ts or sta_ts
         eta_full = format_full_datetime(arr_ts)
 
-        # 這裡不執行外部兜底圖片避免掃描過慢
         image_url = None
         images = ac.get("images") or {}
         large_images = images.get("large") or images.get("medium") or []
@@ -277,7 +275,6 @@ def scan_taiwan_airport_schedules(unmatched_targets: list) -> dict:
     query_ts = int(time.time()) - (2 * 3600)
 
     for apt in airports:
-        # 修改為 arrivals 降落時刻表
         url = f"https://api.flightradar24.com/common/v1/airport.json?code={apt}&plugin[]=schedule&plugin-setting[schedule][mode]=arrivals&plugin-setting[schedule][timestamp]={query_ts}&page=1&limit=150"
         try:
             res = http_session.get(url, headers=get_headers(), timeout=5)
@@ -304,7 +301,7 @@ def scan_taiwan_airport_schedules(unmatched_targets: list) -> dict:
                             "route": f"{orig} ➔ {apt}", "destination": apt,
                             "eta_time": eta_time_str, "arr_ts": arr_ts,
                             "is_taiwan_dest": True,
-                            "image_url": None, # 延遲加載
+                            "image_url": None,
                             "source": f"📅 機場時刻表 ({apt})"
                         }
                         print(f"  └─ 🟢 [時刻表抓取] {t} -> {f_num} ({orig} ➔ {apt}) | 🕒 {eta_time_str}")
@@ -345,7 +342,6 @@ def web_search_target(target_raw: str) -> dict | None:
             if not valid_flights: continue
 
             best_flight = None
-            # 優先找目的地是台灣的
             tw_flights = [(f, ts, dest) for f, ts, dest in valid_flights if check_is_taiwan(dest) and abs(ts - current_ts) <= (12 * 3600)]
 
             if tw_flights: best_flight = min(tw_flights, key=lambda x: abs(x[1] - current_ts))[0]
@@ -374,7 +370,7 @@ def web_search_target(target_raw: str) -> dict | None:
                 "route": f"{orig} ➔ {dest}", "destination": dest,
                 "eta_time": format_full_datetime(arr_ts), "arr_ts": arr_ts,
                 "is_taiwan_dest": check_is_taiwan(dest),
-                "image_url": None, # 延遲加載
+                "image_url": None,
                 "source": f"🔍 航班資料庫 API ({fetch_by.upper()})"
             }
         except Exception:
@@ -409,7 +405,7 @@ def send_discord_webhook(taiwan_flights: list):
         for f in flights:
             embed = {
                 "title": f"🚨 [{category}] 彩繪機降落警報：{f['f_num']}",
-                "color": 15158332, # 紅色
+                "color": 15158332,
                 "fields": [
                     {"name": "機身註冊號", "value": f"`{f['f_reg']}` ({f['ac_code']})", "inline": True},
                     {"name": "航線狀況", "value": f"📍 **{f['route']}**", "inline": True},
