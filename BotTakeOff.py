@@ -50,7 +50,7 @@ TARGETS = load_targets("targets.txt")
 
 
 # ============================================================
-# 2. HTTP Session
+# 2. HTTP Session (FR24 專用)
 # ============================================================
 
 http_session = requests.Session()
@@ -60,7 +60,7 @@ http_session.mount("http://", adapter)
 
 
 # ============================================================
-# 3. Header
+# 3. Header (FR24 專用)
 # ============================================================
 
 USER_AGENTS = [
@@ -117,7 +117,7 @@ def check_is_taiwan(text_or_code: str) -> bool:
 
 
 # ============================================================
-# 5. PlaneSpotters
+# 5. PlaneSpotters (修正圖片獲取與防盜鏈問題)
 # ============================================================
 
 def fetch_planespotters_image(registration: str) -> str | None:
@@ -140,14 +140,10 @@ def fetch_planespotters_image(registration: str) -> str | None:
             photos = res.json().get("photos", [])
             if photos:
                 photo = photos[0]
-                # 優先抓取大縮圖，若無則抓取一般縮圖
                 return (
                     photo.get("thumbnail_large", {}).get("src") 
                     or photo.get("thumbnail", {}).get("src")
                 )
-        else:
-            print(f"⚠️ PlaneSpotters 拒絕請求 (狀態碼: {res.status_code})")
-            
     except Exception as e:
         print(f"⚠️ 獲取 {registration} 圖片發生異常: {e}")
         
@@ -160,44 +156,78 @@ def fetch_planespotters_image(registration: str) -> str | None:
 
 def fetch_direct_clickhandler(fr_api_inst, flight_obj_or_id) -> dict | None:
     try:
-        if hasattr(flight_obj_or_id, "id"): flight_obj = flight_obj_or_id
+        if hasattr(flight_obj_or_id, "id"):
+            details = fr_api_inst.get_flight_details(flight_obj_or_id)
         else:
             class DummyFlight:
-                def __init__(self, fid): self.id = fid
-            flight_obj = DummyFlight(flight_obj_or_id)
+                def __init__(self, fid):
+                    self.id = fid
+            details = fr_api_inst.get_flight_details(DummyFlight(flight_obj_or_id))
 
-        details = fr_api_inst.get_flight_details(flight_obj)
-        if not details or not isinstance(details, dict): return None
+        if not details or not isinstance(details, dict):
+            return None
 
         airport = details.get("airport") or {}
-        origin_obj = (airport.get("origin") or {}).get("code") or {}
-        destination_obj = (airport.get("destination") or {}).get("code") or {}
+        orig_obj = (airport.get("origin") or {}).get("code") or {}
+        dest_obj = (airport.get("destination") or {}).get("code") or {}
 
-        origin = origin_obj.get("iata") or origin_obj.get("icao") or (airport.get("origin") or {}).get("name") or "未知"
-        destination = destination_obj.get("iata") or destination_obj.get("icao") or (airport.get("destination") or {}).get("pluginData", {}).get("details", {}).get("name") or "未知"
+        origin = (
+            orig_obj.get("iata") or orig_obj.get("icao") or 
+            (airport.get("origin") or {}).get("name") or "未知"
+        )
+        destination = (
+            dest_obj.get("iata") or dest_obj.get("icao") or 
+            (airport.get("destination") or {}).get("pluginData", {}).get("details", {}).get("name") or "未知"
+        )
 
         ident = details.get("identification") or {}
         f_num = (ident.get("number") or {}).get("default") or (ident.get("callsign") or {}).get("default") or "未知"
 
-        aircraft = details.get("aircraft") or {}
-        f_reg = aircraft.get("registration") or "未知"
-        ac_code = (aircraft.get("model") or {}).get("code") or "未知"
+        ac = details.get("aircraft") or {}
+        f_reg = ac.get("registration") or "未知"
+        ac_code = (ac.get("model") or {}).get("code") or "未知"
 
+        # ----------------------------------------------------
+        # 同時擷取「起飛時間」與「抵達時間」
+        # ----------------------------------------------------
         time_data = details.get("time") or {}
-        dep_ts = (time_data.get("estimated") or {}).get("departure") or (time_data.get("scheduled") or {}).get("departure") or (time_data.get("real") or {}).get("departure")
+        
+        std_ts = (time_data.get("scheduled") or {}).get("departure")
+        etd_ts = (time_data.get("estimated") or {}).get("departure")
+        atd_ts = (time_data.get("real") or {}).get("departure")
+        dep_ts = etd_ts or std_ts or atd_ts
+        dep_full = format_full_datetime(dep_ts)
 
-        img_url = None
-        images = aircraft.get("images") or {}
+        sta_ts = (time_data.get("scheduled") or {}).get("arrival")
+        eta_ts = (time_data.get("estimated") or {}).get("arrival")
+        ata_ts = (time_data.get("real") or {}).get("arrival")
+        arr_ts = eta_ts or ata_ts or sta_ts
+        eta_full = format_full_datetime(arr_ts)
+
+        # ----------------------------------------------------
+        # 圖片擷取邏輯
+        # ----------------------------------------------------
+        image_url = None
+        images = ac.get("images") or {}
         large_images = images.get("large") or images.get("medium") or []
-        if isinstance(large_images, list) and large_images:
-            img_url = large_images[0].get("src")
-        if not img_url and f_reg != "未知":
-            img_url = fetch_planespotters_image(f_reg)
+
+        if large_images and isinstance(large_images, list) and len(large_images) > 0:
+            image_url = large_images[0].get("src")
+
+        if not image_url and f_reg != "未知":
+            image_url = fetch_planespotters_image(f_reg)
 
         return {
-            "origin": origin, "destination": destination, "f_num": f_num,
-            "f_reg": f_reg, "ac_code": ac_code, "dep_ts": dep_ts,
-            "dep_time": format_full_datetime(dep_ts), "image_url": img_url,
+            "origin": origin,
+            "destination": destination,
+            "f_num": f_num,
+            "f_reg": f_reg,
+            "ac_code": ac_code,
+            "dep_ts": dep_ts,
+            "dep_time": dep_full,
+            "arr_ts": arr_ts,
+            "eta_time": eta_full,
+            "image_url": image_url,
         }
     except Exception:
         return None
@@ -246,7 +276,9 @@ def build_result(target_raw: str, flight, details: dict, source: str, match_type
 
     return {
         "target": target_raw, "f_num": f_num, "f_reg": f_reg, "ac_code": details["ac_code"],
-        "route": f"{orig} ➔ {dest}", "dep_time": details["dep_time"], "dep_ts": dep_ts,
+        "route": f"{orig} ➔ {dest}", 
+        "dep_time": details["dep_time"], "dep_ts": dep_ts,
+        "eta_time": details.get("eta_time", "未知"),
         "is_taiwan_origin": check_is_taiwan(orig), 
         "is_future": bool(dep_ts and int(dep_ts) > int(time.time())),
         "image_url": details["image_url"], "source": source, "match_type": match_type,
@@ -254,7 +286,7 @@ def build_result(target_raw: str, flight, details: dict, source: str, match_type
 
 
 # ============================================================
-# 9. 階段 1.5：掃描台灣機場起飛時刻表 (擴增上限至 150)
+# 9. 階段 1.5：掃描台灣機場起飛時刻表
 # ============================================================
 
 def scan_taiwan_airport_schedules(unmatched_targets: list) -> dict:
@@ -264,7 +296,6 @@ def scan_taiwan_airport_schedules(unmatched_targets: list) -> dict:
     matched = {}
 
     for apt in airports:
-        # 將 limit 拉高至 150 涵蓋更廣的時段
         url = f"https://api.flightradar24.com/common/v1/airport.json?code={apt}&plugin[]=schedule&plugin-setting[schedule][mode]=departures&plugin-setting[schedule][timestamp]={int(time.time())}&page=1&limit=150"
         try:
             res = http_session.get(url, headers=get_headers(), timeout=5)
@@ -283,11 +314,16 @@ def scan_taiwan_airport_schedules(unmatched_targets: list) -> dict:
                     if t_norm == normalize_target(f_reg) or t_norm == normalize_target(f_num):
                         dest = flight.get("airport", {}).get("destination", {}).get("code", {}).get("iata", "未知")
                         dep_ts = flight.get("time", {}).get("scheduled", {}).get("departure")
+                        
+                        arr_ts = flight.get("time", {}).get("scheduled", {}).get("arrival")
+                        
                         matched[t] = {
                             "target": t, "f_num": f_num or t, "f_reg": f_reg or "未知",
                             "ac_code": flight.get("aircraft", {}).get("model", {}).get("code", "未知"),
-                            "route": f"{apt} ➔ {dest}", "dep_time": format_full_datetime(dep_ts),
-                            "dep_ts": dep_ts, "is_taiwan_origin": True,
+                            "route": f"{apt} ➔ {dest}", 
+                            "dep_time": format_full_datetime(dep_ts), "dep_ts": dep_ts,
+                            "eta_time": format_full_datetime(arr_ts),
+                            "is_taiwan_origin": True,
                             "is_future": bool(dep_ts and int(dep_ts) > int(time.time())),
                             "image_url": fetch_planespotters_image(f_reg) if f_reg else None,
                             "source": f"📅 機場時刻表 ({apt})", "match_type": "SCHEDULE_EXACT"
@@ -301,13 +337,12 @@ def scan_taiwan_airport_schedules(unmatched_targets: list) -> dict:
 
 
 # ============================================================
-# 10. 全新！使用 Flight List API 精準補查 (不再略過地面飛機)
+# 10. 使用 Flight List API 精準補查
 # ============================================================
 
 def web_search_target(target_raw: str) -> dict | None:
     target_raw = target_raw.upper().strip()
 
-    # 第一輪當作機身註冊號 (reg) 查，第二輪當作航班號 (flight) 查
     for fetch_by in ["reg", "flight"]:
         url = f"https://api.flightradar24.com/common/v1/flight/list.json?query={target_raw}&fetchBy={fetch_by}&page=1&limit=15"
         try:
@@ -320,7 +355,6 @@ def web_search_target(target_raw: str) -> dict | None:
             current_ts = int(time.time())
             best_flight = None
 
-            # 尋找「未來」或「近期 (過去 12 小時內)」的有效航班
             for f in flights:
                 orig = f.get("airport", {}).get("origin", {}).get("code", {}).get("iata")
                 dest = f.get("airport", {}).get("destination", {}).get("code", {}).get("iata")
@@ -334,7 +368,7 @@ def web_search_target(target_raw: str) -> dict | None:
                     break
 
             if not best_flight:
-                for f in flights: # fallback 取最新一筆有起飛機場的紀錄
+                for f in flights:
                     if f.get("airport", {}).get("origin", {}).get("code", {}).get("iata"):
                         best_flight = f
                         break
@@ -351,15 +385,17 @@ def web_search_target(target_raw: str) -> dict | None:
             
             t_info = best_flight.get("time", {})
             dep_ts = t_info.get("estimated", {}).get("departure") or t_info.get("scheduled", {}).get("departure") or t_info.get("real", {}).get("departure")
+            arr_ts = t_info.get("estimated", {}).get("arrival") or t_info.get("scheduled", {}).get("arrival") or t_info.get("real", {}).get("arrival")
 
-            # 確保抓出來的資料真的跟 target 吻合
             t_norm = normalize_target(target_raw)
             if not (t_norm == normalize_target(f_reg) or t_norm == normalize_target(f_num)):
                 continue
 
             return {
                 "target": target_raw, "f_num": f_num, "f_reg": f_reg, "ac_code": ac_code,
-                "route": f"{orig} ➔ {dest}", "dep_time": format_full_datetime(dep_ts), "dep_ts": dep_ts,
+                "route": f"{orig} ➔ {dest}", 
+                "dep_time": format_full_datetime(dep_ts), "dep_ts": dep_ts,
+                "eta_time": format_full_datetime(arr_ts),
                 "is_taiwan_origin": check_is_taiwan(orig),
                 "is_future": bool(dep_ts and int(dep_ts) > current_ts),
                 "image_url": fetch_planespotters_image(f_reg) if f_reg != "未知" else None,
@@ -385,7 +421,8 @@ def send_discord_webhook(taiwan_flights: list):
             "fields": [
                 {"name": "機身註冊號", "value": f"`{f['f_reg']}` ({f['ac_code']})", "inline": True},
                 {"name": "航線狀況", "value": f"📍 **{f['route']}**", "inline": True},
-                {"name": "預計起飛 (UTC+8)", "value": f"🕒 `{f['dep_time']}`", "inline": False},
+                {"name": "預計起飛 (UTC+8)", "value": f"🛫 `{f['dep_time']}`", "inline": True},
+                {"name": "預計抵達 (UTC+8)", "value": f"🛬 `{f.get('eta_time', '未知')}`", "inline": True},
                 {"name": "搜尋方式", "value": f"`{f.get('match_type', 'UNKNOWN')}`", "inline": False},
             ],
             "footer": {"text": f"FR24 智慧航班監測系統 • 來源：{f['source']}"},
@@ -412,7 +449,6 @@ def deep_scan_unmatched(unmatched_targets: list):
     start_time = time.time()
     results = {}
     
-    # 增加 max_workers 加速 API 併發請求
     with ThreadPoolExecutor(max_workers=min(10, max(1, len(unmatched_targets)))) as executor:
         future_to_target = {executor.submit(web_search_target, target): target for target in unmatched_targets}
         for future in as_completed(future_to_target):
@@ -429,19 +465,29 @@ def deep_scan_unmatched(unmatched_targets: list):
     print(f"\n🔍 第二階段完成：{time.time() - start_time:.2f} 秒 (補查成功 {len(results)} 架)")
     return results
 
+
+# ============================================================
+# 15. 最終篩選 (嚴格限制：現在 ~ 現在+10分鐘內)
+# ============================================================
+
 def filter_taiwan_departures(matched_dict: dict, minutes_ahead: int = 10):
     now_ts = int(time.time())
-    limit_ts = now_ts + minutes_ahead * 60
-    past_limit_ts = now_ts - (2 * 3600)  # 容許過去兩小時表定但可能還在地面的延誤航班
+    limit_ts = now_ts + (minutes_ahead * 60)
 
     taiwan_departures = []
+    
     for f in matched_dict.values():
-        if not f.get("is_taiwan_origin"): continue
+        if not f.get("is_taiwan_origin"): 
+            continue
+            
         try:
             dep_ts = int(f.get("dep_ts", 0))
-            if past_limit_ts <= dep_ts < limit_ts: taiwan_departures.append(f)
+            if now_ts <= dep_ts <= limit_ts: 
+                taiwan_departures.append(f)
+                
         except Exception:
             continue
+            
     taiwan_departures.sort(key=lambda x: (x.get("dep_ts") or 0))
     return taiwan_departures
 
@@ -500,7 +546,7 @@ def main():
     print(f" • 監控目標數：{len(TARGETS)} 架")
     print(f" • 成功定位：{len(matched_dict)} 架")
     print(f" • ❌ 未找到：{final_unmatched} 架")
-    print(f" • 🛫 即將 / 正在自台灣起飛：{len(taiwan_departures)} 架")
+    print(f" • 🛫 未來 10 分鐘內自台灣起飛：{len(taiwan_departures)} 架")
     print(f" • ⏱️ 本次總耗時：{time.time() - program_start:.2f} 秒\n" + "=" * 65)
 
     if taiwan_departures:
