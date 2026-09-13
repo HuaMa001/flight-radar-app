@@ -20,13 +20,28 @@ DISCORD_WEBHOOK_URL_ELSE = os.getenv("DISCORD_WEBHOOK_URL_ELSE", "")
 # 兜底 fallback
 DEFAULT_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL", os.getenv("DISCORD", ""))
 
+def sanitize_ascii_registration(value: str) -> str:
+    """
+    將各種看起來像減號、但編碼不同的破折號（常見於複製貼上）
+    統一轉換成標準 ASCII "-"，並過濾掉其餘無法送進 HTTP 請求的非 ASCII 字元。
+    避免類似 'latin-1' codec can't encode 的錯誤。
+    """
+    if not value:
+        return value
+    dash_variants = ["‐", "‑", "‒", "–", "—", "―", "－", "−", "─"]
+    result = str(value)
+    for d in dash_variants:
+        result = result.replace(d, "-")
+    result = result.encode("ascii", "ignore").decode("ascii")
+    return result.strip()
+
 def load_targets(filepath: str = "targets.txt") -> list[str]:
     targets = []
     if os.path.exists(filepath):
         try:
             with open(filepath, "r", encoding="utf-8") as f:
                 targets = [
-                    line.strip().upper()
+                    sanitize_ascii_registration(line.strip().upper())
                     for line in f
                     if line.strip() and not line.strip().startswith("#")
                 ]
@@ -188,14 +203,17 @@ def fetch_planespotters_image(registration: str) -> str | None:
     if not registration or registration == "未知":
         return None
 
-    registration = registration.strip().upper()
+    registration = sanitize_ascii_registration(registration.strip().upper())
+
+    if not registration:
+        return None
 
     url = f"https://api.planespotters.net/pub/photos/reg/{registration}"
 
     # PlaneSpotters 官方要求 User-Agent 必須附上聯絡方式（URL 或 email），
     # 否則會回傳 403。請將下方網址換成你自己的 GitHub repo 或聯絡頁面。
     headers = {
-        "User-Agent": "TaiwanFlightWatcher/1.0 (+https://github.com/你的帳號/你的repo)",
+        "User-Agent": "TaiwanFlightWatcher/1.0 (+https://github.com/HuaMa001/flight-radar-app)",
         "Accept": "application/json, text/plain, */*",
     }
 
@@ -247,7 +265,10 @@ def get_best_image_for_target(f_reg: str, fr_api_inst) -> str | None:
     if not f_reg or f_reg == "未知":
         return None
 
-    f_reg = f_reg.strip().upper()
+    f_reg = sanitize_ascii_registration(f_reg.strip().upper())
+
+    if not f_reg:
+        return None
 
     # ========================================================
     # 0. 先讀本地快取
