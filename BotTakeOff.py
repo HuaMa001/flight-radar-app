@@ -439,7 +439,7 @@ def send_discord_webhook(taiwan_flights: list):
     for f in taiwan_flights:
         embed = {
             "title": f"🚨 彩繪機台灣起飛警報：{f['f_num']}",
-            "color": 3498DB,  # 經典水藍色側邊條
+           "color": 0x3498DB, 
             "fields": [
                 {
                     "name": "機身註冊號", 
