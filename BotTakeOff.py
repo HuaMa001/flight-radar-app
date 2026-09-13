@@ -425,7 +425,7 @@ def web_search_target(target_raw: str) -> dict | None:
 
 
 # ============================================================
-# 11. Discord 與推播 (高質感排版)
+# 11. Discord 與推播 (還原指定排版)
 # ============================================================
 
 def send_discord_webhook(taiwan_flights: list):
@@ -435,9 +435,10 @@ def send_discord_webhook(taiwan_flights: list):
 
     embeds = []
     for f in taiwan_flights:
+        # 完全依照指定圖片版面設計 Embed
         embed = {
             "title": f"🚨 彩繪機台灣起飛警報：{f['f_num']}",
-            "color": 15158332,  # 鮮豔紅色
+            "color": 3498DB,  # 3498DB 對應的是 Discord 預設的經典水藍色側邊條
             "fields": [
                 {
                     "name": "機身註冊號", 
@@ -453,19 +454,10 @@ def send_discord_webhook(taiwan_flights: list):
                     "name": "預計起飛 (UTC+8)", 
                     "value": f"🕒 `{f['dep_time']}`", 
                     "inline": False
-                },
-                {
-                    "name": "預計抵達 (UTC+8)", 
-                    "value": f"🛬 `{f.get('eta_time', '未知')}`", 
-                    "inline": False
-                },
-                {
-                    "name": "搜尋方式", 
-                    "value": f"`{f.get('match_type', 'UNKNOWN')}`", 
-                    "inline": False
-                },
+                }
             ],
             "footer": {
+                # 將來源直接整合至 Footer，保持版面乾淨
                 "text": f"FR24 智慧航班監測系統 • 來源：{f['source']}"
             },
         }
@@ -490,7 +482,6 @@ def send_discord_webhook(taiwan_flights: list):
                 print(f"❌ Discord 發送失敗，HTTP 狀態碼: {res.status_code}")
         except Exception as e:
             print(f"❌ Discord 發送異常: {e}")
-
 
 # ============================================================
 # 12. 工作流程 (Scanner)
