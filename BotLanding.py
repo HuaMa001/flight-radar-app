@@ -8,7 +8,7 @@ from FlightRadarAPI import FlightRadar24API
 
 # --- 1. 環境變數與 targets.txt 讀取邏輯 ---
 DISCORD_WEBHOOK_URL = os.getenv(
-    "DISCORD_WEBHOOK_URL", os.getenv("DISCORD", "")
+    "DISCORD_WEBHOOK_URL", os.getenv("DISCORD_LANDING_TPE", "")
 )
 
 
