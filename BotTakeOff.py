@@ -50,7 +50,7 @@ TARGETS = load_targets("targets.txt")
 
 
 # ============================================================
-# 2. HTTP Session (FR24 專用)
+# 2. HTTP Session (FR24 專用，避免與圖片抓取混淆)
 # ============================================================
 
 http_session = requests.Session()
@@ -60,7 +60,7 @@ http_session.mount("http://", adapter)
 
 
 # ============================================================
-# 3. Header (FR24 專用)
+# 3. Header
 # ============================================================
 
 USER_AGENTS = [
@@ -117,33 +117,28 @@ def check_is_taiwan(text_or_code: str) -> bool:
 
 
 # ============================================================
-# 5. PlaneSpotters (修正圖片獲取與防盜鏈問題)
+# 5. PlaneSpotters (修正圖片獲取與防盜鏈機制)
 # ============================================================
 
 def fetch_planespotters_image(registration: str) -> str | None:
-    if not registration or registration == "未知": 
+    if not registration or registration == "未知":
         return None
         
     try:
         url = f"https://api.planespotters.net/pub/photos/reg/{registration.strip()}"
         
-        # 使用專屬的乾淨 Header，絕對不要帶入 FR24 的 Referer
+        # 使用獨立請求與乾淨 Header 避免 PlaneSpotters 擋圖 (403 Forbidden)
         clean_headers = {
             "User-Agent": random.choice(USER_AGENTS),
             "Accept": "application/json"
         }
         
-        # 使用獨立的 requests.get，避免被 http_session 的設定污染
         res = requests.get(url, headers=clean_headers, timeout=5)
-        
         if res.status_code == 200:
             photos = res.json().get("photos", [])
             if photos:
-                photo = photos[0]
-                return (
-                    photo.get("thumbnail_large", {}).get("src") 
-                    or photo.get("thumbnail", {}).get("src")
-                )
+                # 優先使用 large 縮圖，若無則用一般 thumbnail
+                return photos[0].get("thumbnail_large", {}).get("src") or photos[0].get("thumbnail", {}).get("src")
     except Exception as e:
         print(f"⚠️ 獲取 {registration} 圖片發生異常: {e}")
         
@@ -205,7 +200,7 @@ def fetch_direct_clickhandler(fr_api_inst, flight_obj_or_id) -> dict | None:
         eta_full = format_full_datetime(arr_ts)
 
         # ----------------------------------------------------
-        # 圖片擷取邏輯
+        # 圖片雙層擷取邏輯
         # ----------------------------------------------------
         image_url = None
         images = ac.get("images") or {}
@@ -314,7 +309,6 @@ def scan_taiwan_airport_schedules(unmatched_targets: list) -> dict:
                     if t_norm == normalize_target(f_reg) or t_norm == normalize_target(f_num):
                         dest = flight.get("airport", {}).get("destination", {}).get("code", {}).get("iata", "未知")
                         dep_ts = flight.get("time", {}).get("scheduled", {}).get("departure")
-                        
                         arr_ts = flight.get("time", {}).get("scheduled", {}).get("arrival")
                         
                         matched[t] = {
@@ -409,38 +403,75 @@ def web_search_target(target_raw: str) -> dict | None:
 
 
 # ============================================================
-# 11. Discord 與推播
+# 11. Discord 與推播 (高質感排版)
 # ============================================================
 
 def send_discord_webhook(taiwan_flights: list):
-    if not DISCORD_WEBHOOK_URL: return
+    if not DISCORD_WEBHOOK_URL:
+        print("⚠️ 未設定 DISCORD Webhook URL，跳過推播。")
+        return
+
     embeds = []
     for f in taiwan_flights:
         embed = {
-            "title": f"🚨 彩繪機台灣起飛警報：{f['f_num']}", "color": 3447003,
+            "title": f"🚨 彩繪機台灣起飛警報：{f['f_num']}",
+            "color": 15158332,  # 鮮豔紅色
             "fields": [
-                {"name": "機身註冊號", "value": f"`{f['f_reg']}` ({f['ac_code']})", "inline": True},
-                {"name": "航線狀況", "value": f"📍 **{f['route']}**", "inline": True},
-                {"name": "預計起飛 (UTC+8)", "value": f"🛫 `{f['dep_time']}`", "inline": True},
-                {"name": "預計抵達 (UTC+8)", "value": f"🛬 `{f.get('eta_time', '未知')}`", "inline": True},
-                {"name": "搜尋方式", "value": f"`{f.get('match_type', 'UNKNOWN')}`", "inline": False},
+                {
+                    "name": "機身註冊號", 
+                    "value": f"`{f['f_reg']}` ({f['ac_code']})", 
+                    "inline": True
+                },
+                {
+                    "name": "航線狀況", 
+                    "value": f"📍 **{f['route']}**", 
+                    "inline": True
+                },
+                {
+                    "name": "預計起飛 (UTC+8)", 
+                    "value": f"🕒 `{f['dep_time']}`", 
+                    "inline": False
+                },
+                {
+                    "name": "預計抵達 (UTC+8)", 
+                    "value": f"🛬 `{f.get('eta_time', '未知')}`", 
+                    "inline": False
+                },
+                {
+                    "name": "搜尋方式", 
+                    "value": f"`{f.get('match_type', 'UNKNOWN')}`", 
+                    "inline": False
+                },
             ],
-            "footer": {"text": f"FR24 智慧航班監測系統 • 來源：{f['source']}"},
+            "footer": {
+                "text": f"FR24 智慧航班監測系統 • 來源：{f['source']}"
+            },
         }
-        if f.get("image_url"): embed["image"] = {"url": f["image_url"]}
+
+        # 圖片處理
+        if f.get("image_url"):
+            embed["image"] = {"url": f["image_url"]}
+
         embeds.append(embed)
 
+    # 批次發送，避免觸發 Discord API Rate Limit
     for i in range(0, len(embeds), 10):
+        batch = embeds[i : i + 10]
+        payload = {"embeds": batch}
+        
         try:
-            res = http_session.post(DISCORD_WEBHOOK_URL, json={"embeds": embeds[i:i+10]}, timeout=5)
-            if res.status_code in [200, 204]: print(f"✅ 成功推播第 {i // 10 + 1} 批")
-            else: print(f"❌ Discord 發送失敗，狀態碼: {res.status_code}")
+            # 使用獨立的 requests 發送，不與 FR24 session 綁定
+            res = requests.post(DISCORD_WEBHOOK_URL, json=payload, timeout=5)
+            if res.status_code in [200, 204]:
+                print(f"✅ 成功推播第 {i // 10 + 1} 批共 {len(batch)} 架台灣起飛航班！")
+            else:
+                print(f"❌ Discord 發送失敗，HTTP 狀態碼: {res.status_code}")
         except Exception as e:
             print(f"❌ Discord 發送異常: {e}")
 
 
 # ============================================================
-# 12. 工作流程 (Scanner & Filter)
+# 12. 工作流程 (Scanner)
 # ============================================================
 
 def deep_scan_unmatched(unmatched_targets: list):
@@ -467,15 +498,13 @@ def deep_scan_unmatched(unmatched_targets: list):
 
 
 # ============================================================
-# 15. 最終篩選 (修改為：現在-10分鐘 <= 起飛時間 <= 現在+10分鐘)
+# 13. 最終篩選 (起飛時間：現在 - 10分 <= 起飛 <= 現在 + 10分)
 # ============================================================
 
 def filter_taiwan_departures(matched_dict: dict, minutes_ahead: int = 10, minutes_behind: int = 10):
     now_ts = int(time.time())
     
-    # 上限：現在 + 10 分鐘
     upper_limit_ts = now_ts + (minutes_ahead * 60)
-    # 下限：現在 - 10 分鐘
     lower_limit_ts = now_ts - (minutes_behind * 60)
 
     taiwan_departures = []
@@ -486,26 +515,23 @@ def filter_taiwan_departures(matched_dict: dict, minutes_ahead: int = 10, minute
             
         try:
             dep_ts = int(f.get("dep_ts", 0))
-            
-            # 放寬條件：包含過去 10 分鐘內，以及未來 10 分鐘內
             if lower_limit_ts <= dep_ts <= upper_limit_ts: 
                 taiwan_departures.append(f)
                 
         except Exception:
             continue
             
-    # 依照起飛時間排序
     taiwan_departures.sort(key=lambda x: (x.get("dep_ts") or 0))
     return taiwan_departures
 
 
 # ============================================================
-# 13. 主程式
+# 14. 主程式
 # ============================================================
 
 def main():
     program_start = time.time()
-    print("=" * 65 + "\n✈️ FR24 高速智慧航班監測系統 (100% 資料庫覆蓋升級版)\n" + "=" * 65)
+    print("=" * 65 + "\n✈️ FR24 高速智慧航班起飛監測系統 (100% 資料庫覆蓋升級版)\n" + "=" * 65)
 
     if not TARGETS:
         print("🛑 沒有偵測到任何監控目標，程式結束。")
@@ -546,23 +572,23 @@ def main():
         matched_dict.update(deep_results)
 
     # === 最終篩選 & 推播 ===
-    taiwan_departures = filter_taiwan_departures(matched_dict, minutes_ahead=10)
+    taiwan_departures = filter_taiwan_departures(matched_dict, minutes_ahead=10, minutes_behind=10)
     final_unmatched = len(TARGETS) - len(matched_dict)
 
     print("\n" + "=" * 65 + "\n📊 掃描結果總結\n" + "=" * 65)
     print(f" • 監控目標數：{len(TARGETS)} 架")
     print(f" • 成功定位：{len(matched_dict)} 架")
     print(f" • ❌ 未找到：{final_unmatched} 架")
-    print(f" • 🛫 未來 10 分鐘內自台灣起飛：{len(taiwan_departures)} 架")
+    print(f" • 🛫 符合條件起飛區間：{len(taiwan_departures)} 架")
     print(f" • ⏱️ 本次總耗時：{time.time() - program_start:.2f} 秒\n" + "=" * 65)
 
     if taiwan_departures:
-        print("\n🚨 發現即將自台灣起飛的目標：")
+        print("\n🚨 發現符合時間區間起飛的目標：")
         for f in taiwan_departures:
             print(f"  ✈️ {f['f_num']} | {f['f_reg']} | {f['ac_code']} | {f['route']} | {f['dep_time']}")
         send_discord_webhook(taiwan_departures)
     else:
-        print("\nℹ️ 目前沒有目標班機將在未來 10 分鐘內自台灣起飛。")
+        print("\nℹ️ 目前沒有目標班機將在 前後 10 分鐘內 自台灣起飛。")
 
     if unmatched_targets:
         actually_unmatched = [t for t in TARGETS if t not in matched_dict]
@@ -571,6 +597,7 @@ def main():
             for t in actually_unmatched: print(f"   - {t}")
 
     print("\n✅ 程式執行完成。")
+
 
 if __name__ == "__main__":
     main()
