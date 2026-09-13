@@ -471,7 +471,7 @@ def deep_scan_unmatched(unmatched_targets: list):
 # ============================================================
 
 def filter_taiwan_departures(matched_dict: dict, minutes_ahead: int = 10):
-    now_ts = int(time.time())
+    now_ts = int(time.time()) - (minutes_ahead * 60)
     limit_ts = now_ts + (minutes_ahead * 60)
 
     taiwan_departures = []
