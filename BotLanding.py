@@ -197,8 +197,74 @@ def get_routing_category(dest_text: str, reg_text: str) -> str:
 
 
 # ============================================================
-# 5. 圖片獲取模組（還原為昨日可用版本：僅 PlaneSpotters）
+# 5. 圖片獲取模組（順序：FR24 → JetPhotos → PlaneSpotters → Wikimedia Commons）
 # ============================================================
+def fetch_jetphotos_image(registration: str) -> str | None:
+    if not registration or registration == "未知":
+        return None
+
+    registration = sanitize_ascii_registration(registration.strip().upper())
+
+    if not registration:
+        return None
+
+    url = f"https://www.jetphotos.com/api/json?reg={registration}"
+
+    headers = {
+        "User-Agent": random.choice(USER_AGENTS),
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "https://www.jetphotos.com/",
+    }
+
+    try:
+        print(f"     [圖片] JetPhotos 搜尋 {registration}...")
+
+        # 避免過於頻繁的請求
+        time.sleep(random.uniform(1.0, 2.0))
+
+        res = requests.get(url, headers=headers, timeout=8, allow_redirects=True)
+
+        print(f"     [圖片] JetPhotos 回應狀態碼：{res.status_code}")
+
+        if res.status_code in (403, 429):
+            print(f"     [圖片] ⚠️ JetPhotos {res.status_code}，跳過")
+            return None
+
+        if res.status_code != 200:
+            print(f"     [圖片] JetPhotos 回應內容：{res.text[:200]}")
+            return None
+
+        try:
+            data = res.json()
+        except Exception:
+            print("     [圖片] JetPhotos 回傳不是 JSON")
+            return None
+
+        photos = data.get("data", [])
+
+        if not photos:
+            print(f"     [圖片] JetPhotos 查無 {registration} 的照片資料")
+            return None
+
+        for photo in photos:
+            image_url = (
+                photo.get("file_url")
+                or photo.get("thumbnail_large_url")
+                or photo.get("thumbnail_url")
+            )
+            if image_url:
+                print(f"     [圖片] ✅ JetPhotos 成功")
+                return image_url
+
+    except requests.RequestException as e:
+        print(f"     [圖片] JetPhotos 網路錯誤：{e}")
+    except Exception as e:
+        print(f"     [圖片] JetPhotos 異常：{e}")
+
+    return None
+
+
 def fetch_planespotters_image(registration: str) -> str | None:
     if not registration or registration == "未知":
         return None
@@ -257,6 +323,74 @@ def fetch_planespotters_image(registration: str) -> str | None:
         except Exception as e:
             print(f"     [圖片] PlaneSpotters 異常：{e}")
             return None
+
+    return None
+
+
+def fetch_wikimedia_image(registration: str) -> str | None:
+    if not registration or registration == "未知":
+        return None
+
+    registration = sanitize_ascii_registration(registration.strip().upper())
+
+    if not registration:
+        return None
+
+    try:
+        print(f"     [圖片] Wikimedia Commons 搜尋 {registration}...")
+
+        search_url = "https://commons.wikimedia.org/w/api.php"
+
+        headers = {
+            "User-Agent": "TaiwanFlightWatcher/1.0 (+https://github.com/HuaMa001/flight-radar-app)"
+        }
+
+        search_params = {
+            "action": "query",
+            "format": "json",
+            "list": "search",
+            "srnamespace": "6",
+            "srsearch": registration,
+            "srlimit": 1,
+        }
+
+        res = requests.get(search_url, params=search_params, headers=headers, timeout=6)
+
+        print(f"     [圖片] Wikimedia 回應狀態碼：{res.status_code}")
+
+        if res.status_code != 200:
+            print(f"     [圖片] Wikimedia 回應內容：{res.text[:200]}")
+            return None
+
+        data = res.json()
+        search_results = data.get("query", {}).get("search", [])
+
+        if not search_results:
+            print(f"     [圖片] Wikimedia 查無 {registration} 的照片資料")
+            return None
+
+        file_title = search_results[0].get("title")
+
+        info_params = {
+            "action": "query",
+            "format": "json",
+            "titles": file_title,
+            "prop": "imageinfo",
+            "iiprop": "url",
+        }
+
+        info_res = requests.get(search_url, params=info_params, headers=headers, timeout=6)
+
+        if info_res.status_code == 200:
+            pages = info_res.json().get("query", {}).get("pages", {})
+            for page_id, page_info in pages.items():
+                imageinfo = page_info.get("imageinfo", [])
+                if imageinfo:
+                    print(f"     [圖片] ✅ Wikimedia Commons 成功")
+                    return imageinfo[0].get("url")
+
+    except Exception as e:
+        print(f"     [圖片] Wikimedia 查詢異常：{e}")
 
     return None
 
@@ -356,21 +490,34 @@ def get_best_image_for_target(f_reg: str, fr_api_inst) -> str | None:
         )
 
     # ========================================================
-    # 2. PlaneSpotters（昨日版本邏輯）
+    # 2. JetPhotos
+    # ========================================================
+    image_url = fetch_jetphotos_image(f_reg)
+
+    if image_url:
+        save_cached_image(f_reg, image_url)
+        return image_url
+
+    # ========================================================
+    # 3. PlaneSpotters
     # ========================================================
     image_url = fetch_planespotters_image(f_reg)
 
     if image_url:
-
-        save_cached_image(
-            f_reg,
-            image_url
-        )
-
+        save_cached_image(f_reg, image_url)
         return image_url
 
     # ========================================================
-    # 3. 全部失敗
+    # 4. Wikimedia Commons
+    # ========================================================
+    image_url = fetch_wikimedia_image(f_reg)
+
+    if image_url:
+        save_cached_image(f_reg, image_url)
+        return image_url
+
+    # ========================================================
+    # 5. 全部失敗
     # ========================================================
     print(
         f"     [圖片] ❌ {f_reg} 所有圖片來源皆無結果"
