@@ -190,45 +190,55 @@ def fetch_planespotters_image(registration: str) -> str | None:
 
     registration = registration.strip().upper()
 
-    try:
-        print(f"     [圖片] PlaneSpotters 搜尋 {registration}...")
+    url = f"https://api.planespotters.net/pub/photos/reg/{registration}"
 
-        url = f"https://api.planespotters.net/pub/photos/reg/{registration}"
+    # PlaneSpotters 官方要求 User-Agent 必須附上聯絡方式（URL 或 email），
+    # 否則會回傳 403。請將下方網址換成你自己的 GitHub repo 或聯絡頁面。
+    headers = {
+        "User-Agent": "TaiwanFlightWatcher/1.0 (+https://github.com/你的帳號/你的repo)",
+        "Accept": "application/json, text/plain, */*",
+    }
 
-        headers = {
-            "User-Agent": random.choice(USER_AGENTS),
-            "Accept": "application/json, text/plain, */*",
-            "Accept-Language": "zh-TW,zh;q=0.9,en-US;q=0.8,en;q=0.7",
-            "Referer": "https://www.flightradar24.com/",
-            "Origin": "https://www.flightradar24.com",
-        }
+    for attempt in range(2):
+        try:
+            print(f"     [圖片] PlaneSpotters 搜尋 {registration}（第 {attempt + 1} 次嘗試）...")
 
-        res = http_session.get(url, headers=headers, timeout=3)
+            res = http_session.get(url, headers=headers, timeout=5)
 
-        print(f"     [圖片] PlaneSpotters 回應狀態碼：{res.status_code}")
+            print(f"     [圖片] PlaneSpotters 回應狀態碼：{res.status_code}")
 
-        if res.status_code == 200:
-            photos = res.json().get("photos", [])
+            if res.status_code == 200:
+                photos = res.json().get("photos", [])
 
-            if not photos:
-                print(f"     [圖片] PlaneSpotters 查無 {registration} 的照片資料")
+                if not photos:
+                    print(f"     [圖片] PlaneSpotters 查無 {registration} 的照片資料")
+                    return None
+
+                image_url = (
+                    photos[0].get("thumbnail_large", {}).get("src")
+                    or photos[0].get("thumbnail", {}).get("src")
+                )
+
+                if image_url:
+                    print(f"     [圖片] ✅ PlaneSpotters 成功")
+                    return image_url
+                else:
+                    print(f"     [圖片] PlaneSpotters 回傳資料但無圖片連結")
                 return None
 
-            image_url = (
-                photos[0].get("thumbnail_large", {}).get("src")
-                or photos[0].get("thumbnail", {}).get("src")
-            )
+            elif res.status_code >= 500:
+                # Cloudflare 5xx 通常是暫時性錯誤，值得重試一次
+                print(f"     [圖片] PlaneSpotters 伺服器錯誤 {res.status_code}，準備重試...")
+                time.sleep(1.5)
+                continue
 
-            if image_url:
-                print(f"     [圖片] ✅ PlaneSpotters 成功")
-                return image_url
             else:
-                print(f"     [圖片] PlaneSpotters 回傳資料但無圖片連結")
-        else:
-            print(f"     [圖片] PlaneSpotters 回應內容：{res.text[:200]}")
+                print(f"     [圖片] PlaneSpotters 回應內容：{res.text[:200]}")
+                return None
 
-    except Exception as e:
-        print(f"     [圖片] PlaneSpotters 異常：{e}")
+        except Exception as e:
+            print(f"     [圖片] PlaneSpotters 異常：{e}")
+            return None
 
     return None
 
