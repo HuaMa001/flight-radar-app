@@ -290,8 +290,11 @@ def scan_taiwan_airport_schedules(unmatched_targets: list) -> dict:
     airports = ["TPE", "TSA", "KHH", "RMQ"]
     matched = {}
 
+    # 關鍵修正：將查詢時間往前推 2 小時，避免漏掉剛表定起飛但還在滑行的班機
+    query_ts = int(time.time()) - (2 * 3600)
+
     for apt in airports:
-        url = f"https://api.flightradar24.com/common/v1/airport.json?code={apt}&plugin[]=schedule&plugin-setting[schedule][mode]=departures&plugin-setting[schedule][timestamp]={int(time.time())}&page=1&limit=150"
+        url = f"https://api.flightradar24.com/common/v1/airport.json?code={apt}&plugin[]=schedule&plugin-setting[schedule][mode]=departures&plugin-setting[schedule][timestamp]={query_ts}&page=1&limit=150"
         try:
             res = http_session.get(url, headers=get_headers(), timeout=5)
             if res.status_code != 200: continue
@@ -347,8 +350,9 @@ def web_search_target(target_raw: str) -> dict | None:
             if not flights: continue
 
             current_ts = int(time.time())
-            best_flight = None
+            valid_flights = []
 
+            # 1. 收集所有具備時間與機場資訊的航班
             for f in flights:
                 orig = f.get("airport", {}).get("origin", {}).get("code", {}).get("iata")
                 dest = f.get("airport", {}).get("destination", {}).get("code", {}).get("iata")
@@ -357,15 +361,33 @@ def web_search_target(target_raw: str) -> dict | None:
                 t_info = f.get("time", {})
                 dep_ts = t_info.get("estimated", {}).get("departure") or t_info.get("scheduled", {}).get("departure") or t_info.get("real", {}).get("departure")
                 
-                if dep_ts and int(dep_ts) > current_ts - (12 * 3600):
-                    best_flight = f
-                    break
+                if dep_ts:
+                    valid_flights.append((f, int(dep_ts), orig))
 
-            if not best_flight:
-                for f in flights:
-                    if f.get("airport", {}).get("origin", {}).get("code", {}).get("iata"):
-                        best_flight = f
-                        break
+            if not valid_flights: continue
+
+            best_flight = None
+
+            # 2. 優先篩選：找出前後 12 小時內「從台灣起飛」的航班
+            tw_flights = [
+                (f, ts) for f, ts, orig in valid_flights 
+                if check_is_taiwan(orig) and abs(ts - current_ts) <= (12 * 3600)
+            ]
+
+            if tw_flights:
+                # 如果有多筆台灣起飛紀錄，取時間最接近現在的
+                best_flight = min(tw_flights, key=lambda x: abs(x[1] - current_ts))[0]
+            else:
+                # 3. 若無台灣起飛紀錄，則在所有 24 小時內的航班中，找時間最接近現在的
+                recent_flights = [
+                    (f, ts) for f, ts, orig in valid_flights 
+                    if abs(ts - current_ts) <= (24 * 3600)
+                ]
+                if recent_flights:
+                    best_flight = min(recent_flights, key=lambda x: abs(x[1] - current_ts))[0]
+                else:
+                    # 4. 兜底：直接取絕對時間最接近的一筆
+                    best_flight = min(valid_flights, key=lambda x: abs(x[1] - current_ts))[0]
             
             if not best_flight: continue
 
