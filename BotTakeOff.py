@@ -121,17 +121,36 @@ def check_is_taiwan(text_or_code: str) -> bool:
 # ============================================================
 
 def fetch_planespotters_image(registration: str) -> str | None:
-    if not registration or registration == "未知": return None
+    if not registration or registration == "未知": 
+        return None
+        
     try:
-        url = f"https://api.planespotters.net/pub/photos/reg/{registration}"
-        res = http_session.get(url, headers=get_headers(), timeout=3)
+        url = f"https://api.planespotters.net/pub/photos/reg/{registration.strip()}"
+        
+        # 使用專屬的乾淨 Header，絕對不要帶入 FR24 的 Referer
+        clean_headers = {
+            "User-Agent": random.choice(USER_AGENTS),
+            "Accept": "application/json"
+        }
+        
+        # 使用獨立的 requests.get，避免被 http_session 的設定污染
+        res = requests.get(url, headers=clean_headers, timeout=5)
+        
         if res.status_code == 200:
             photos = res.json().get("photos", [])
             if photos:
                 photo = photos[0]
-                return photo.get("thumbnail_large", {}).get("src") or photo.get("thumbnail", {}).get("src")
-    except Exception:
-        pass
+                # 優先抓取大縮圖，若無則抓取一般縮圖
+                return (
+                    photo.get("thumbnail_large", {}).get("src") 
+                    or photo.get("thumbnail", {}).get("src")
+                )
+        else:
+            print(f"⚠️ PlaneSpotters 拒絕請求 (狀態碼: {res.status_code})")
+            
+    except Exception as e:
+        print(f"⚠️ 獲取 {registration} 圖片發生異常: {e}")
+        
     return None
 
 
