@@ -124,8 +124,48 @@ def get_routing_category(dest_text: str, reg_text: str) -> str:
 
 
 # ============================================================
-# 5. 圖片獨立請求與備援模組
+# 5. 多重圖片獨立請求與備援模組 (含 Wikimedia Commons 備援)
 # ============================================================
+def fetch_wikimedia_image(registration: str) -> str | None:
+    if not registration or registration == "未知": return None
+    try:
+        print(f"     [圖片] 正在向 Wikimedia Commons 搜尋 {registration} 的圖片...")
+        search_url = "https://commons.wikimedia.org/w/api.php"
+        search_params = {
+            "action": "query",
+            "format": "json",
+            "list": "search",
+            "srnamespace": "6",
+            "srsearch": registration,
+            "srlimit": 1
+        }
+        headers = {"User-Agent": "FlightTrackerBot/1.0 (Educational Project)"}
+        res = requests.get(search_url, params=search_params, headers=headers, timeout=5)
+        
+        if res.status_code == 200:
+            data = res.json()
+            search_results = data.get("query", {}).get("search", [])
+            if search_results:
+                file_title = search_results[0].get("title")
+                info_params = {
+                    "action": "query",
+                    "format": "json",
+                    "titles": file_title,
+                    "prop": "imageinfo",
+                    "iiprop": "url"
+                }
+                info_res = requests.get(search_url, params=info_params, headers=headers, timeout=5)
+                if info_res.status_code == 200:
+                    pages = info_res.json().get("query", {}).get("pages", {})
+                    for page_id, page_info in pages.items():
+                        imageinfo = page_info.get("imageinfo", [])
+                        if imageinfo:
+                            print(f"     [圖片] 成功從 Wikimedia Commons 獲取圖片！")
+                            return imageinfo[0].get("url")
+    except Exception as e:
+        print(f"     [圖片] Wikimedia 查詢異常: {e}")
+    return None
+
 def fetch_planespotters_image(registration: str) -> str | None:
     if not registration or registration == "未知": return None
     try:
@@ -149,13 +189,11 @@ def fetch_planespotters_image(registration: str) -> str | None:
                 return photos[0].get("thumbnail_large", {}).get("src") or photos[0].get("thumbnail", {}).get("src")
         else:
             print(f"     [圖片] PlaneSpotters 請求失敗，狀態碼: {res.status_code}")
-    except requests.exceptions.SSLError as e:
-        print(f"     [圖片] 獲取 {registration} 發生 SSL 憑證交握異常 (狀態 525，略過圖片): {e}")
-    except requests.exceptions.RequestException as e:
-        print(f"     [圖片] 獲取 {registration} 發生連線異常 (略過圖片): {e}")
-    except Exception as e:
-        print(f"     [圖片] 獲取 {registration} 發生未知異常: {e}")
-    return None
+    except Exception:
+        pass
+    
+    # 若 PlaneSpotters 失敗 (如 403/525)，自動交由 Wikimedia Commons 備援
+    return fetch_wikimedia_image(registration)
 
 def get_best_image_for_target(f_reg: str, fr_api_inst) -> str | None:
     if not f_reg or f_reg == "未知": return None
@@ -298,7 +336,6 @@ def scan_taiwan_airport_schedules(unmatched_targets: list) -> dict:
                 f_num = flight.get("identification", {}).get("number", {}).get("default", "")
                 arr_ts = flight.get("time", {}).get("scheduled", {}).get("arrival")
 
-                # 增加條件：預計抵達時間必須大於或等於目前時間
                 if arr_ts and int(arr_ts) < current_ts:
                     continue
 
@@ -353,7 +390,6 @@ def web_search_target(target_raw: str) -> dict | None:
                 t_info = f.get("time", {})
                 arr_ts = t_info.get("estimated", {}).get("arrival") or t_info.get("scheduled", {}).get("arrival") or t_info.get("real", {}).get("arrival")
                 
-                # 增加條件：抵達時間必須 >= 目前時間
                 if arr_ts and int(arr_ts) >= current_ts:
                     valid_flights.append((f, int(arr_ts), dest))
 
@@ -501,7 +537,6 @@ def main():
     for target in TARGETS:
         flight, match_type = find_target_in_index(target, flight_index)
         if flight and (details := fetch_direct_clickhandler(fr_api_inst, flight)):
-            # 增加條件：抵達時間必須 >= 目前時間
             arr_ts = details.get("arr_ts")
             if arr_ts and int(arr_ts) < current_ts:
                 continue
