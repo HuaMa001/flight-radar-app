@@ -2,14 +2,21 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta, timezone
 import os
 import random
+import re
 import time
+from collections import defaultdict
 import requests
 from FlightRadarAPI import FlightRadar24API
 
 # --- 1. 環境變數與 targets.txt 讀取邏輯 ---
-DISCORD_WEBHOOK_URL = os.getenv(
-    "DISCORD_WEBHOOK_URL", os.getenv("DISCORD", "")
-)
+DISCORD_WEBHOOK_URL_TPE = os.getenv("DISCORD_WEBHOOK_URL_TPE", "")
+DISCORD_WEBHOOK_URL_TPE_FOREIGN = os.getenv("DISCORD_WEBHOOK_URL_TPE_FOREIGN", "")
+DISCORD_WEBHOOK_URL_TSA = os.getenv("DISCORD_WEBHOOK_URL_TSA", "")
+DISCORD_WEBHOOK_URL_KHH = os.getenv("DISCORD_WEBHOOK_URL_KHH", "")
+DISCORD_WEBHOOK_URL_ELSE = os.getenv("DISCORD_WEBHOOK_URL_ELSE", "")
+
+# 兜底 fallback
+DEFAULT_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL", os.getenv("DISCORD", ""))
 
 
 def load_targets(filepath: str = "targets.txt") -> list[str]:
@@ -102,6 +109,42 @@ def check_is_taiwan(text_or_code: str) -> bool:
     return any(kw in s for kw in tw_name_keywords)
 
 
+def is_taiwan_registration(reg: str) -> bool:
+    """判斷註冊號是否為 B- 加 5 位數字（如 B-18007）"""
+    if not reg or reg == "未知":
+        return False
+    return bool(re.fullmatch(r"^B-\d{5}$", reg.upper().strip()))
+
+
+def get_routing_category(dest_text: str, reg_text: str) -> str:
+    """
+    判斷推播渠道分類：
+    - TPE 且註冊號為 B-12345 -> TPE
+    - TPE 且非 B-12345     -> TPE_FOREIGN
+    - TSA                  -> TSA
+    - KHH                  -> KHH
+    - 其餘台灣機場          -> ELSE
+    """
+    d = str(dest_text).upper().strip()
+
+    # 1. 桃園 (TPE / RCTP)
+    if "TPE" in d or "RCTP" in d or "TAOYUAN" in d or "桃園" in d:
+        if is_taiwan_registration(reg_text):
+            return "TPE"
+        return "TPE_FOREIGN"
+
+    # 2. 松山 (TSA / RCSS)
+    if "TSA" in d or "RCSS" in d or "SONGSHAN" in d or "松山" in d:
+        return "TSA"
+
+    # 3. 高雄 (KHH / RCKH)
+    if "KHH" in d or "RCKH" in d or "KAOHSIUNG" in d or "高雄" in d:
+        return "KHH"
+
+    # 4. 其餘台灣境內機場
+    return "ELSE"
+
+
 def fetch_planespotters_image(registration: str) -> str | None:
     if not registration or registration == "未知":
         return None
@@ -161,7 +204,7 @@ def fetch_direct_clickhandler(fr_api_inst, flight_obj_or_id) -> dict | None:
         f_reg = ac.get("registration") or "未知"
         ac_code = (ac.get("model") or {}).get("code") or "未知"
 
-        # 抓取抵達時間 (Arrival Time)
+        # 抵達時間
         time_data = details.get("time") or {}
         sta_ts = (time_data.get("scheduled") or {}).get("arrival")
         eta_ts = (time_data.get("estimated") or {}).get("arrival")
@@ -221,6 +264,7 @@ def search_single_target(target_raw: str, all_flights: list, flight_map_by_id: d
                     "f_num": details["f_num"] if details["f_num"] != "未知" else (f_num or f_callsign),
                     "f_reg": details["f_reg"] if details["f_reg"] != "未知" else (f_reg or target_raw),
                     "ac_code": details["ac_code"],
+                    "destination": dest,
                     "route": f"{details['origin']} ➔ {dest}",
                     "eta_time": details["eta_time"],
                     "arr_ts": details["arr_ts"],
@@ -229,7 +273,7 @@ def search_single_target(target_raw: str, all_flights: list, flight_map_by_id: d
                     "source": "📡 直播廣播",
                 }
 
-    # 階段 2：Web API 反查（二次核實時給予較長的對應延遲）
+    # 階段 2：Web API 反查
     delay = random.uniform(0.2, 0.4) if is_retry else random.uniform(0.05, 0.15)
     time.sleep(delay)
     search_url = f"https://www.flightradar24.com/v1/search/web/find?query={target_raw}"
@@ -257,6 +301,7 @@ def search_single_target(target_raw: str, all_flights: list, flight_map_by_id: d
                                 "f_num": details["f_num"] if details["f_num"] != "未知" else target_raw,
                                 "f_reg": details["f_reg"] if details["f_reg"] != "未知" else target_raw,
                                 "ac_code": details["ac_code"],
+                                "destination": dest,
                                 "route": f"{details['origin']} ➔ {dest}",
                                 "eta_time": details["eta_time"],
                                 "arr_ts": details["arr_ts"],
@@ -270,40 +315,56 @@ def search_single_target(target_raw: str, all_flights: list, flight_map_by_id: d
     return None
 
 
-# --- 3. Discord 推播發送 ---
+# --- 3. Discord 多渠道推播發送 ---
 def send_discord_webhook(taiwan_flights: list):
-    if not DISCORD_WEBHOOK_URL:
-        print("⚠️ 未設定 DISCORD Webhook URL，跳過推播。")
-        return
+    webhook_routes = {
+        "TPE": DISCORD_WEBHOOK_URL_TPE or DEFAULT_WEBHOOK_URL,
+        "TPE_FOREIGN": DISCORD_WEBHOOK_URL_TPE_FOREIGN or DEFAULT_WEBHOOK_URL,
+        "TSA": DISCORD_WEBHOOK_URL_TSA or DEFAULT_WEBHOOK_URL,
+        "KHH": DISCORD_WEBHOOK_URL_KHH or DEFAULT_WEBHOOK_URL,
+        "ELSE": DISCORD_WEBHOOK_URL_ELSE or DEFAULT_WEBHOOK_URL,
+    }
 
-    embeds = []
+    # 依目的機場及國籍註冊分類
+    grouped_flights = defaultdict(list)
     for f in taiwan_flights:
-        embed = {
-            "title": f"🚨 彩繪機降落台灣警報：{f['f_num']}",
-            "color": 15158332,
-            "fields": [
-                {"name": "機身註冊號", "value": f"`{f['f_reg']}` ({f['ac_code']})", "inline": True},
-                {"name": "航線狀況", "value": f"📍 **{f['route']}**", "inline": True},
-                {"name": "預計抵達 (UTC+8)", "value": f"🕒 `{f['eta_time']}`", "inline": False},
-            ],
-            "footer": {"text": f"FR24 智慧航班監測系統 • 來源：{f['source']}"},
-        }
-        if f.get("image_url"):
-            embed["image"] = {"url": f["image_url"]}
+        cat = get_routing_category(f.get("destination", ""), f.get("f_reg", ""))
+        grouped_flights[cat].append(f)
 
-        embeds.append(embed)
+    for category, flights in grouped_flights.items():
+        target_webhook = webhook_routes.get(category)
+        if not target_webhook:
+            print(f"⚠️ 未設定 [{category}] 的 Webhook URL，跳過該分類共 {len(flights)} 架班機的推播。")
+            continue
 
-    for i in range(0, len(embeds), 10):
-        batch = embeds[i : i + 10]
-        payload = {"embeds": batch}
-        try:
-            res = http_session.post(DISCORD_WEBHOOK_URL, json=payload, timeout=5)
-            if res.status_code in [200, 204]:
-                print(f"✅ 成功推播第 {i//10 + 1} 批共 {len(batch)} 架降落台灣航班！")
-            else:
-                print(f"❌ Discord 發送失敗，HTTP 狀態碼: {res.status_code}")
-        except Exception as e:
-            print(f"❌ Discord 發送異常: {e}")
+        embeds = []
+        for f in flights:
+            embed = {
+                "title": f"🚨 [{category}] 彩繪機降落警報：{f['f_num']}",
+                "color": 15158332,
+                "fields": [
+                    {"name": "機身註冊號", "value": f"`{f['f_reg']}` ({f['ac_code']})", "inline": True},
+                    {"name": "航線狀況", "value": f"📍 **{f['route']}**", "inline": True},
+                    {"name": "預計抵達 (UTC+8)", "value": f"🕒 `{f['eta_time']}`", "inline": False},
+                ],
+                "footer": {"text": f"FR24 智慧航班監測系統 • 來源：{f['source']}"},
+            }
+            if f.get("image_url"):
+                embed["image"] = {"url": f["image_url"]}
+
+            embeds.append(embed)
+
+        for i in range(0, len(embeds), 10):
+            batch = embeds[i : i + 10]
+            payload = {"embeds": batch}
+            try:
+                res = http_session.post(target_webhook, json=payload, timeout=5)
+                if res.status_code in [200, 204]:
+                    print(f"✅ 成功推播 [{category}] 第 {i//10 + 1} 批共 {len(batch)} 架航班！")
+                else:
+                    print(f"❌ [{category}] Discord 發送失敗，HTTP 狀態碼: {res.status_code}")
+            except Exception as e:
+                print(f"❌ [{category}] Discord 發送異常: {e}")
 
 
 # --- 4. 主程序執行 ---
@@ -383,14 +444,14 @@ def main():
 
         time.sleep(0.5)
 
-    # === 第二階段：未查到目標二次深層核實 (含 Stable 驗證機制) ===
+    # === 第二階段：未查到目標二次深層核實 ===
     unmatched_targets = [t for t in TARGETS if t not in matched_dict]
     if unmatched_targets:
         RETRY_WAIT_SEC = 10
         print(f"\n⏳ 進入二次核實階段... 暫停 {RETRY_WAIT_SEC} 秒以解除 API 頻率限制（剩餘未查到：{len(unmatched_targets)} 架）")
         time.sleep(RETRY_WAIT_SEC)
 
-        stable_threshold_phase2 = 10  # 二次核實需連續 5 輪數字穩定
+        stable_threshold_phase2 = 10
         retry_last_unmatched = -1
         retry_stable_counter = 0
         retry_round = 0
@@ -431,7 +492,6 @@ def main():
                 getattr(f, "id", ""): f for f in snapshot if getattr(f, "id", "")
             }
 
-            # 二次核實使用較低的線程數 (4 個 workers) 以提高發射成功率
             with ThreadPoolExecutor(max_workers=4) as executor:
                 future_to_target = {
                     executor.submit(
