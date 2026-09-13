@@ -60,23 +60,81 @@ adapter = requests.adapters.HTTPAdapter(pool_connections=30, pool_maxsize=30, ma
 http_session.mount("https://", adapter)
 http_session.mount("http://", adapter)
 
+# ============================================================
+# 2.5 圖片快取
+# ============================================================
+IMAGE_CACHE_DIR = "image_cache"
+os.makedirs(IMAGE_CACHE_DIR, exist_ok=True)
 
+
+def get_image_cache_path(registration: str) -> str | None:
+    if not registration or registration == "未知":
+        return None
+
+    safe_reg = normalize_target(registration)
+
+    if not safe_reg:
+        return None
+
+    return os.path.join(IMAGE_CACHE_DIR, f"{safe_reg}.txt")
+
+
+def load_cached_image(registration: str) -> str | None:
+    path = get_image_cache_path(registration)
+
+    if not path or not os.path.exists(path):
+        return None
+
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            url = f.read().strip()
+
+        if url:
+            print(f"     [圖片] 使用快取圖片：{registration}")
+            return url
+
+    except Exception as e:
+        print(f"     [圖片] 讀取快取失敗：{e}")
+
+    return None
+
+
+def save_cached_image(registration: str, image_url: str):
+    path = get_image_cache_path(registration)
+
+    if not path or not image_url:
+        return
+
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(image_url)
+
+        print(f"     [圖片] 已建立圖片快取：{registration}")
+
+    except Exception as e:
+        print(f"     [圖片] 儲存快取失敗：{e}")
+        
 # ============================================================
 # 3. Header
 # ============================================================
 USER_AGENTS = [
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:125.0) Gecko/20100101 Firefox/125.0",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
 ]
+
 
 def get_headers():
     return {
         "User-Agent": random.choice(USER_AGENTS),
-        "Accept": "application/json, text/plain, */*",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
         "Accept-Language": "zh-TW,zh;q=0.9,en-US;q=0.8,en;q=0.7",
-        "Referer": "https://www.flightradar24.com/",
-        "Origin": "https://www.flightradar24.com",
+        "Accept-Encoding": "gzip, deflate, br",
         "Connection": "keep-alive",
     }
 
@@ -139,7 +197,12 @@ def fetch_wikimedia_image(registration: str) -> str | None:
             "srsearch": registration,
             "srlimit": 1
         }
-        headers = {"User-Agent": "FlightTrackerBot/1.0 (Educational Project)"}
+       headers = {
+    "User-Agent": (
+        "FlightTrackerBot/1.0 "
+        "(Educational Project; contact via GitHub)"
+    )
+}
         res = requests.get(search_url, params=search_params, headers=headers, timeout=5)
         
         if res.status_code == 200:
@@ -167,88 +230,291 @@ def fetch_wikimedia_image(registration: str) -> str | None:
     return None
     
 def fetch_jetphotos_image(registration: str) -> str | None:
-    if not registration or registration == "未知": return None
+    if not registration or registration == "未知":
+        return None
+
+    registration = registration.strip().upper()
+
     try:
-        print(f"     [圖片] 正在向 JetPhotos 搜尋 {registration} 的圖片...")
-        url = f"https://www.jetphotos.com/api/json?reg={registration.strip()}"
+        print(f"     [圖片] JetPhotos 搜尋 {registration}...")
+
+        url = f"https://www.jetphotos.com/api/json?reg={registration}"
+
         headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+            "User-Agent": random.choice(USER_AGENTS),
             "Accept": "application/json, text/plain, */*",
-            "Accept-Language": "zh-TW,zh;q=0.9,en-US;q=0.8,en;q=0.7",
+            "Accept-Language": "en-US,en;q=0.9",
             "Referer": "https://www.jetphotos.com/",
         }
-        time.sleep(0.5)
-        res = requests.get(url, headers=headers, timeout=6)
-        
-        if res.status_code == 200:
+
+        # 不要大量快速請求
+        time.sleep(random.uniform(1.5, 3.0))
+
+        res = requests.get(
+            url,
+            headers=headers,
+            timeout=8,
+            allow_redirects=True
+        )
+
+        # ----------------------------------------------------
+        # 403 / 429：直接放棄，不要 retry
+        # ----------------------------------------------------
+        if res.status_code in (403, 429):
+            print(
+                f"     [圖片] ⚠️ JetPhotos {res.status_code}，"
+                f"GitHub Actions 來源可能被限制，跳過"
+            )
+            return None
+
+        if res.status_code != 200:
+            print(
+                f"     [圖片] JetPhotos HTTP {res.status_code}"
+            )
+            return None
+
+        try:
             data = res.json()
-            photos = data.get("data", [])
-            if photos:
-                print(f"     [圖片] 成功從 JetPhotos 獲取圖片！")
-                return photos[0].get("file_url") or photos[0].get("thumbnail_large_url")
-        else:
-            print(f"     [圖片] JetPhotos 請求失敗，狀態碼: {res.status_code}")
+        except Exception:
+            print("     [圖片] JetPhotos 回傳不是 JSON")
+            return None
+
+        photos = data.get("data", [])
+
+        if not photos:
+            print(f"     [圖片] JetPhotos 沒有找到 {registration}")
+            return None
+
+        for photo in photos:
+            image_url = (
+                photo.get("file_url")
+                or photo.get("thumbnail_large_url")
+                or photo.get("thumbnail_url")
+            )
+
+            if image_url:
+                print(f"     [圖片] ✅ JetPhotos 成功")
+                return image_url
+
+    except requests.RequestException as e:
+        print(f"     [圖片] JetPhotos 網路錯誤：{e}")
+
     except Exception as e:
-        print(f"     [圖片] JetPhotos 查詢異常: {e}")
-        
+        print(f"     [圖片] JetPhotos 異常：{e}")
+
     return None
     
 def fetch_planespotters_image(registration: str) -> str | None:
-    if not registration or registration == "未知": return None
+    if not registration or registration == "未知":
+        return None
+
+    registration = registration.strip().upper()
+
     try:
-        print(f"     [圖片] 正在向 PlaneSpotters 請求 {registration} 的兜底圖片...")
-        url = f"https://api.planespotters.net/pub/photos/reg/{registration.strip()}"
-        
-        spotter_headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            "Accept": "application/json, text/plain, */*",
+        print(f"     [圖片] PlaneSpotters 搜尋 {registration}...")
+
+        url = (
+            "https://api.planespotters.net/pub/photos/reg/"
+            f"{registration}"
+        )
+
+        headers = {
+            "User-Agent": random.choice(USER_AGENTS),
+            "Accept": "application/json",
             "Accept-Language": "en-US,en;q=0.9",
             "Referer": "https://www.planespotters.net/",
         }
-        
-        time.sleep(0.5)
-        res = requests.get(url, headers=spotter_headers, timeout=6)
-        
-        if res.status_code == 200:
+
+        time.sleep(random.uniform(1.5, 3.0))
+
+        res = requests.get(
+            url,
+            headers=headers,
+            timeout=8,
+            allow_redirects=True
+        )
+
+        # ----------------------------------------------------
+        # 403 / 429：直接跳過
+        # ----------------------------------------------------
+        if res.status_code in (403, 429):
+            print(
+                f"     [圖片] ⚠️ PlaneSpotters {res.status_code}，"
+                f"跳過並改用 Wikimedia"
+            )
+            return None
+
+        if res.status_code != 200:
+            print(
+                f"     [圖片] PlaneSpotters HTTP {res.status_code}"
+            )
+            return None
+
+        try:
             data = res.json()
-            photos = data.get("photos", [])
-            if photos:
-                return photos[0].get("thumbnail_large", {}).get("src") or photos[0].get("thumbnail", {}).get("src")
-        else:
-            print(f"     [圖片] PlaneSpotters 請求失敗，狀態碼: {res.status_code}")
-    except Exception:
-        pass
-    
-    # 若 PlaneSpotters 失敗 (如 403/525)，自動交由 Wikimedia Commons 備援
-    return fetch_wikimedia_image(registration)
+        except Exception:
+            print("     [圖片] PlaneSpotters 回傳不是 JSON")
+            return None
+
+        photos = data.get("photos", [])
+
+        if photos:
+            for photo in photos:
+                image_url = (
+                    photo.get("thumbnail_large", {}).get("src")
+                    or photo.get("thumbnail", {}).get("src")
+                )
+
+                if image_url:
+                    print(
+                        f"     [圖片] ✅ PlaneSpotters 成功"
+                    )
+                    return image_url
+
+    except requests.RequestException as e:
+        print(f"     [圖片] PlaneSpotters 網路錯誤：{e}")
+
+    except Exception as e:
+        print(f"     [圖片] PlaneSpotters 異常：{e}")
+
+    return None
 
 def get_best_image_for_target(f_reg: str, fr_api_inst) -> str | None:
-    if not f_reg or f_reg == "未知": return None
-    
-    # 1. 先嘗試 FR24 官方圖片
-    try:
-        print(f"     [圖片] 正在向 FR24 尋找 {f_reg} 的官方高畫質圖片...")
-        history_url = f"https://api.flightradar24.com/common/v1/flight/list.json?query={f_reg}&fetchBy=reg&page=1&limit=3"
-        h_res = http_session.get(history_url, headers=get_headers(), timeout=5)
-        if h_res.status_code == 200:
-            for h_f in h_res.json().get("result", {}).get("response", {}).get("data", []):
-                flight_id = h_f.get("identification", {}).get("id")
-                if flight_id:
-                    details = fetch_direct_clickhandler(fr_api_inst, flight_id)
-                    if details and details.get("image_url"):
-                        print(f"     [圖片] 成功獲取 FR24 官方圖片！")
-                        return details["image_url"]
-                    break
-    except Exception:
-        pass
-        
-    # 2. 嘗試 JetPhotos 備援
-    if img := fetch_jetphotos_image(f_reg):
-        print(f"     [圖片] 成功從 JetPhotos 獲取圖片！")
-        return img
+    if not f_reg or f_reg == "未知":
+        return None
 
-    # 3. 嘗試 PlaneSpotters / Wikimedia 備援
-    return fetch_planespotters_image(f_reg)
+    f_reg = f_reg.strip().upper()
+
+    # ========================================================
+    # 0. 先讀本地快取
+    # ========================================================
+    cached = load_cached_image(f_reg)
+
+    if cached:
+        return cached
+
+    # ========================================================
+    # 1. FR24
+    # ========================================================
+    try:
+        print(
+            f"     [圖片] FR24 搜尋 {f_reg} 官方圖片..."
+        )
+
+        history_url = (
+            "https://api.flightradar24.com/common/v1/flight/"
+            f"list.json?query={f_reg}"
+            "&fetchBy=reg&page=1&limit=3"
+        )
+
+        h_res = http_session.get(
+            history_url,
+            headers=get_headers(),
+            timeout=6
+        )
+
+        if h_res.status_code == 200:
+
+            data = h_res.json()
+
+            flights = (
+                data
+                .get("result", {})
+                .get("response", {})
+                .get("data", [])
+            )
+
+            for h_f in flights:
+
+                flight_id = (
+                    h_f
+                    .get("identification", {})
+                    .get("id")
+                )
+
+                if not flight_id:
+                    continue
+
+                details = fetch_direct_clickhandler(
+                    fr_api_inst,
+                    flight_id
+                )
+
+                if details:
+
+                    image_url = details.get("image_url")
+
+                    if image_url:
+
+                        print(
+                            "     [圖片] ✅ FR24 官方圖片成功"
+                        )
+
+                        save_cached_image(
+                            f_reg,
+                            image_url
+                        )
+
+                        return image_url
+
+                # 第一個有效航班即可
+                break
+
+    except Exception as e:
+        print(
+            f"     [圖片] FR24 圖片查詢失敗：{e}"
+        )
+
+    # ========================================================
+    # 2. JetPhotos
+    # ========================================================
+    image_url = fetch_jetphotos_image(f_reg)
+
+    if image_url:
+
+        save_cached_image(
+            f_reg,
+            image_url
+        )
+
+        return image_url
+
+    # ========================================================
+    # 3. PlaneSpotters
+    # ========================================================
+    image_url = fetch_planespotters_image(f_reg)
+
+    if image_url:
+
+        save_cached_image(
+            f_reg,
+            image_url
+        )
+
+        return image_url
+
+    # ========================================================
+    # 4. Wikimedia Commons
+    # ========================================================
+    image_url = fetch_wikimedia_image(f_reg)
+
+    if image_url:
+
+        save_cached_image(
+            f_reg,
+            image_url
+        )
+
+        return image_url
+
+    # ========================================================
+    # 5. 全部失敗
+    # ========================================================
+    print(
+        f"     [圖片] ❌ {f_reg} 所有圖片來源皆無結果"
+    )
+
+    return None
 
 
 # ============================================================
