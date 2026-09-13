@@ -124,7 +124,7 @@ def get_routing_category(dest_text: str, reg_text: str) -> str:
 
 
 # ============================================================
-# 5. 圖片獨立請求模組 (僅限最後符合條件時調用)
+# 5. 圖片獨立請求模組 (取自 BOTLANDING)
 # ============================================================
 def fetch_planespotters_image(registration: str) -> str | None:
     if not registration or registration == "未知": return None
@@ -168,7 +168,7 @@ def get_best_image_for_target(f_reg: str, fr_api_inst) -> str | None:
 
 
 # ============================================================
-# 6. FlightRadar24 擷取即時詳細資料
+# 6. FlightRadar24 擷取即時詳細資料 (整合 BOTLANDING 圖片抓取)
 # ============================================================
 def fetch_direct_clickhandler(fr_api_inst, flight_obj_or_id) -> dict | None:
     try:
@@ -202,11 +202,15 @@ def fetch_direct_clickhandler(fr_api_inst, flight_obj_or_id) -> dict | None:
         arr_ts = eta_ts or ata_ts or sta_ts
         eta_full = format_full_datetime(arr_ts)
 
+        # 抓取 FR24 內建圖片，若無則透過 PlaneSpotters 兜底 (BOTLANDING 邏輯)
         image_url = None
         images = ac.get("images") or {}
         large_images = images.get("large") or images.get("medium") or []
         if large_images and isinstance(large_images, list) and len(large_images) > 0:
             image_url = large_images[0].get("src")
+        
+        if not image_url and f_reg != "未知":
+            image_url = fetch_planespotters_image(f_reg)
 
         return {
             "origin": origin, "destination": destination,
@@ -512,9 +516,9 @@ def main():
     print(f" • 🛬 預計降落台灣：{len(taiwan_arrivals)} 架")
     print(f" • ⏱️ 本次總耗時：{time.time() - program_start:.2f} 秒\n" + "=" * 65)
 
-    # === 最終推播：抓圖並發送 ===
+    # === 最終推播：確保每架降落台灣的飛機都抓到圖片 (使用 BOTLANDING 的 get_best_image_for_target) ===
     if taiwan_arrivals:
-        print("\n🚨 發現預計降落台灣的目標，開始獲取圖片並準備推播...")
+        print("\n🚨 發現預計降落台灣的目標，開始檢查與獲取圖片並準備推播...")
         for f in taiwan_arrivals:
             if not f.get("image_url"):
                 f["image_url"] = get_best_image_for_target(f["f_reg"], fr_api_inst)
