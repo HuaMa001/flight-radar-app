@@ -132,19 +132,20 @@ def fetch_planespotters_image(registration: str) -> str | None:
         print(f"     [圖片] 正在向 PlaneSpotters 請求 {registration} 的兜底圖片...")
         url = f"https://api.planespotters.net/pub/photos/reg/{registration.strip()}"
         
-        # 修正 403：使用更完整的擬真瀏覽器 Headers
+        # 修正 403：必須使用標準的瀏覽器 User-Agent，並加入合法的 Referer 與 Accept 標頭
         spotter_headers = {
-            "User-Agent": random.choice(USER_AGENTS),
-            "Accept": "application/json, text/javascript, */*; q=0.01",
-            "Accept-Language": "zh-TW,zh;q=0.9,en-US;q=0.8,en;q=0.7",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Accept": "application/json, text/plain, */*",
+            "Accept-Language": "en-US,en;q=0.9",
             "Referer": "https://www.planespotters.net/",
-            "Origin": "https://www.planespotters.net",
         }
         
-        time.sleep(0.3) # 避免過快請求被阻擋
-        res = requests.get(url, headers=spotter_headers, timeout=5)
+        time.sleep(0.5) # 避免連續請求過快被防火牆攔截
+        res = requests.get(url, headers=spotter_headers, timeout=6)
+        
         if res.status_code == 200:
-            photos = res.json().get("photos", [])
+            data = res.json()
+            photos = data.get("photos", [])
             if photos:
                 return photos[0].get("thumbnail_large", {}).get("src") or photos[0].get("thumbnail", {}).get("src")
         else:
