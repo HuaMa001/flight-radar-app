@@ -165,7 +165,28 @@ def fetch_wikimedia_image(registration: str) -> str | None:
     except Exception as e:
         print(f"     [圖片] Wikimedia 查詢異常: {e}")
     return None
-
+    
+def fetch_jetphotos_image(registration: str) -> str | None:
+    if not registration or registration == "未知": return None
+    try:
+        print(f"     [圖片] 正在向 JetPhotos 搜尋 {registration} 的圖片...")
+        url = f"https://www.jetphotos.com/api/json?reg={registration.strip()}"
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Accept": "application/json, text/plain, */*",
+            "Referer": "https://www.jetphotos.com/",
+        }
+        res = requests.get(url, headers=headers, timeout=6)
+        if res.status_code == 200:
+            data = res.json()
+            photos = data.get("data", [])
+            if photos:
+                # 取得大圖連結
+                return photos[0].get("file_url") or photos[0].get("thumbnail_large_url")
+    except Exception as e:
+        print(f"     [圖片] JetPhotos 查詢異常: {e}")
+    return None
+    
 def fetch_planespotters_image(registration: str) -> str | None:
     if not registration or registration == "未知": return None
     try:
@@ -197,6 +218,8 @@ def fetch_planespotters_image(registration: str) -> str | None:
 
 def get_best_image_for_target(f_reg: str, fr_api_inst) -> str | None:
     if not f_reg or f_reg == "未知": return None
+    
+    # 1. 先嘗試 FR24 官方圖片
     try:
         print(f"     [圖片] 正在向 FR24 尋找 {f_reg} 的官方高畫質圖片...")
         history_url = f"https://api.flightradar24.com/common/v1/flight/list.json?query={f_reg}&fetchBy=reg&page=1&limit=3"
@@ -212,6 +235,13 @@ def get_best_image_for_target(f_reg: str, fr_api_inst) -> str | None:
                     break
     except Exception:
         pass
+        
+    # 2. 嘗試 JetPhotos 備援
+    if img := fetch_jetphotos_image(f_reg):
+        print(f"     [圖片] 成功從 JetPhotos 獲取圖片！")
+        return img
+
+    # 3. 嘗試 PlaneSpotters / Wikimedia 備援
     return fetch_planespotters_image(f_reg)
 
 
