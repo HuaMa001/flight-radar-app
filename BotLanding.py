@@ -124,66 +124,47 @@ def get_routing_category(dest_text: str, reg_text: str) -> str:
 
 
 # ============================================================
-# 5. 圖片獨立請求模組 (無限重試直到成功拿到圖片)
+# 5. 圖片獨立請求模組 (僅限最後符合條件時調用)
 # ============================================================
 def fetch_planespotters_image(registration: str) -> str | None:
     if not registration or registration == "未知": return None
-    url = f"https://api.planespotters.net/pub/photos/reg/{registration.strip()}"
-    clean_headers = {
-        "User-Agent": random.choice(USER_AGENTS),
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        "Accept-Language": "en-US,en;q=0.5"
-    }
     try:
+        print(f"     [圖片] 正在向 PlaneSpotters 請求 {registration} 的兜底圖片...")
+        url = f"https://api.planespotters.net/pub/photos/reg/{registration.strip()}"
+        clean_headers = {
+            "User-Agent": random.choice(USER_AGENTS),
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.5"
+        }
         res = requests.get(url, headers=clean_headers, timeout=5)
         if res.status_code == 200:
             photos = res.json().get("photos", [])
             if photos:
                 return photos[0].get("thumbnail_large", {}).get("src") or photos[0].get("thumbnail", {}).get("src")
-    except Exception:
-        pass
+        else:
+            print(f"     [圖片] PlaneSpotters 拒絕請求，狀態碼: {res.status_code}")
+    except Exception as e:
+        print(f"     [圖片] 獲取 {registration} 發生異常: {e}")
     return None
 
-def get_best_image_for_target(f_reg: str, fr_api_inst) -> str:
-    """
-    持續獲取圖片，直到成功拿到圖片網址為止 (無限重試，帶有遞增暫停避免過度請求遭到封鎖)
-    """
-    if not f_reg or f_reg == "未知": 
-        return ""
-
-    attempt = 0
-    while True:
-        attempt += 1
-        try:
-            print(f"     [圖片] 正在向 FR24 尋找 {f_reg} 的官方高畫質圖片 (第 {attempt} 次嘗試)...")
-            history_url = f"https://api.flightradar24.com/common/v1/flight/list.json?query={f_reg}&fetchBy=reg&page=1&limit=3"
-            h_res = http_session.get(history_url, headers=get_headers(), timeout=5)
-            if h_res.status_code == 200:
-                for h_f in h_res.json().get("result", {}).get("response", {}).get("data", []):
-                    flight_id = h_f.get("identification", {}).get("id")
-                    if flight_id:
-                        details = fetch_direct_clickhandler(fr_api_inst, flight_id)
-                        if details and details.get("image_url"):
-                            print(f"     [圖片] 成功獲取 FR24 官方圖片！")
-                            return details["image_url"]
-                        break
-        except Exception:
-            pass
-
-        # 若 FR24 找不到，改嘗試 PlaneSpotters
-        try:
-            print(f"     [圖片] 正在向 PlaneSpotters 請求 {f_reg} 的兜底圖片 (第 {attempt} 次嘗試)...")
-            ps_img = fetch_planespotters_image(f_reg)
-            if ps_img:
-                print(f"     [圖片] 成功獲取 PlaneSpotters 圖片！")
-                return ps_img
-        except Exception:
-            pass
-
-        # 沒拿到圖片則等待一段時間後繼續重試（使用遞增等待，最多等待 10 秒避免頻率過高）
-        sleep_time = min(attempt * 2, 10)
-        print(f"     [圖片] 尚未取得圖片，將於 {sleep_time} 秒後重試...")
-        time.sleep(sleep_time)
+def get_best_image_for_target(f_reg: str, fr_api_inst) -> str | None:
+    if not f_reg or f_reg == "未知": return None
+    try:
+        print(f"     [圖片] 正在向 FR24 尋找 {f_reg} 的官方高畫質圖片...")
+        history_url = f"https://api.flightradar24.com/common/v1/flight/list.json?query={f_reg}&fetchBy=reg&page=1&limit=3"
+        h_res = http_session.get(history_url, headers=get_headers(), timeout=5)
+        if h_res.status_code == 200:
+            for h_f in h_res.json().get("result", {}).get("response", {}).get("data", []):
+                flight_id = h_f.get("identification", {}).get("id")
+                if flight_id:
+                    details = fetch_direct_clickhandler(fr_api_inst, flight_id)
+                    if details and details.get("image_url"):
+                        print(f"     [圖片] 成功獲取 FR24 官方圖片！")
+                        return details["image_url"]
+                    break
+    except Exception:
+        pass
+    return fetch_planespotters_image(f_reg)
 
 
 # ============================================================
@@ -398,7 +379,7 @@ def web_search_target(target_raw: str) -> dict | None:
 
 
 # ============================================================
-# 11. Discord 多渠道推播發送
+# 11. Discord 多渠道推播發送 (延遲加載版)
 # ============================================================
 def send_discord_webhook(taiwan_flights: list):
     webhook_routes = {
@@ -519,19 +500,6 @@ def main():
         deep_results = deep_scan_unmatched(unmatched_targets)
         matched_dict.update(deep_results)
 
-    # === 目前時間條件篩選 (只保留預計抵達時間大於或等於當前時間的班機) ===
-    current_timestamp = int(time.time())
-    filtered_matched = {}
-    for t, f in matched_dict.items():
-        arr_ts = f.get("arr_ts")
-        # 若有降落時間且大於目前時間，或是時間未知先保留，過濾掉已經過期的班機
-        if arr_ts is None or arr_ts >= current_timestamp:
-            filtered_matched[t] = f
-        else:
-            print(f"  ⏱️ [時間過濾] 班機 {f['f_num']} ({f['f_reg']}) 預計抵達時間已過 ({f['eta_time']})，已自動過濾。")
-
-    matched_dict = filtered_matched
-
     # === 最終篩選 ===
     taiwan_arrivals = [f for f in matched_dict.values() if f.get("is_taiwan_dest")]
     taiwan_arrivals.sort(key=lambda x: (x.get("arr_ts") or 0))
@@ -539,27 +507,27 @@ def main():
 
     print("\n" + "=" * 65 + "\n📊 掃描結果總結\n" + "=" * 65)
     print(f" • 監控目標數：{len(TARGETS)} 架")
-    print(f" • 成功定位（未過期）：{len(matched_dict)} 架")
-    print(f" • ❌ 未找到/已過期：{final_unmatched} 架")
+    print(f" • 成功定位：{len(matched_dict)} 架")
+    print(f" • ❌ 未找到：{final_unmatched} 架")
     print(f" • 🛬 預計降落台灣：{len(taiwan_arrivals)} 架")
     print(f" • ⏱️ 本次總耗時：{time.time() - program_start:.2f} 秒\n" + "=" * 65)
 
-    # === 最終推播：強制獲取圖片直到成功並發送 ===
+    # === 最終推播：抓圖並發送 ===
     if taiwan_arrivals:
-        print("\n🚨 發現預計降落台灣的目標，開始獲取圖片（將持續重試直到成功拿到圖片）...")
+        print("\n🚨 發現預計降落台灣的目標，開始獲取圖片並準備推播...")
         for f in taiwan_arrivals:
-            # 呼叫修改後的函數，會一直嘗試直到拿到圖片為止
-            f["image_url"] = get_best_image_for_target(f["f_reg"], fr_api_inst)
+            if not f.get("image_url"):
+                f["image_url"] = get_best_image_for_target(f["f_reg"], fr_api_inst)
             print(f"  ✈️ {f['f_num']} | {f['f_reg']} | {f['ac_code']} | {f['route']} | {f['eta_time']}")
         send_discord_webhook(taiwan_arrivals)
     else:
-        print("\nℹ️ 目前沒有符合時間條件的目標班機預計降落台灣。")
+        print("\nℹ️ 目前沒有目標班機預計降落台灣。")
 
     if unmatched_targets:
         actually_unmatched = [t for t in TARGETS if t not in matched_dict]
         if actually_unmatched:
-            print("\n❌ 以下目標目前無近期飛行紀錄或已過期：")
-            for t in actually_unmatched: print(f"   - {t}")
+            print("\n❌ 以下目標目前無近期飛行紀錄 (可能在長程維修中)：")
+            for t in actually_unmatched: print(f"    - {t}")
 
     print("\n✅ 程式執行完成。")
 
