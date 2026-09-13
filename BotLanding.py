@@ -460,29 +460,7 @@ def deep_scan_unmatched(unmatched_targets: list):
 
 
 # ============================================================
-# 13. 最終篩選 (降落時間：現在 - 10分 <= 抵達 <= 現在 + 10分)
-# ============================================================
-def filter_taiwan_arrivals(matched_dict: dict, minutes_ahead: int = 10, minutes_behind: int = 10):
-    now_ts = int(time.time())
-    upper_limit_ts = now_ts + (minutes_ahead * 60)
-    lower_limit_ts = now_ts - (minutes_behind * 60)
-
-    taiwan_arrivals = []
-    for f in matched_dict.values():
-        if not f.get("is_taiwan_dest"): continue
-        try:
-            arr_ts = int(f.get("arr_ts", 0))
-            if lower_limit_ts <= arr_ts <= upper_limit_ts: 
-                taiwan_arrivals.append(f)
-        except Exception:
-            continue
-            
-    taiwan_arrivals.sort(key=lambda x: (x.get("arr_ts") or 0))
-    return taiwan_arrivals
-
-
-# ============================================================
-# 14. 主程式
+# 13. 主程式
 # ============================================================
 def main():
     program_start = time.time()
@@ -527,26 +505,27 @@ def main():
         matched_dict.update(deep_results)
 
     # === 最終篩選 ===
-    taiwan_arrivals = filter_taiwan_arrivals(matched_dict, minutes_ahead=10, minutes_behind=10)
+    taiwan_arrivals = [f for f in matched_dict.values() if f.get("is_taiwan_dest")]
+    taiwan_arrivals.sort(key=lambda x: (x.get("arr_ts") or 0))
     final_unmatched = len(TARGETS) - len(matched_dict)
 
     print("\n" + "=" * 65 + "\n📊 掃描結果總結\n" + "=" * 65)
     print(f" • 監控目標數：{len(TARGETS)} 架")
     print(f" • 成功定位：{len(matched_dict)} 架")
     print(f" • ❌ 未找到：{final_unmatched} 架")
-    print(f" • 🛬 符合條件降落區間：{len(taiwan_arrivals)} 架")
+    print(f" • 🛬 預計降落台灣：{len(taiwan_arrivals)} 架")
     print(f" • ⏱️ 本次總耗時：{time.time() - program_start:.2f} 秒\n" + "=" * 65)
 
-    # === 最終推播：只有符合條件的飛機才抓圖並發送 ===
+    # === 最終推播：抓圖並發送 ===
     if taiwan_arrivals:
-        print("\n🚨 發現符合時間區間降落的目標，開始獲取圖片並準備推播...")
+        print("\n🚨 發現預計降落台灣的目標，開始獲取圖片並準備推播...")
         for f in taiwan_arrivals:
             if not f.get("image_url"):
                 f["image_url"] = get_best_image_for_target(f["f_reg"], fr_api_inst)
             print(f"  ✈️ {f['f_num']} | {f['f_reg']} | {f['ac_code']} | {f['route']} | {f['eta_time']}")
         send_discord_webhook(taiwan_arrivals)
     else:
-        print("\nℹ️ 目前沒有目標班機將在 前後 10 分鐘內 降落台灣。")
+        print("\nℹ️ 目前沒有目標班機預計降落台灣。")
 
     if unmatched_targets:
         actually_unmatched = [t for t in TARGETS if t not in matched_dict]
