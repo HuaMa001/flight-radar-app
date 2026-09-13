@@ -31,5 +31,6 @@ jobs:
           DISCORD_WEBHOOK_URL_TSA: ${{ secrets.DISCORD_LANDING_TSA }}
           DISCORD_WEBHOOK_URL_KHH: ${{ secrets.DISCORD_LANDING_KHH }}
           DISCORD_WEBHOOK_URL_ELSE: ${{ secrets.DISCORD_LANDING_ELSE }}
+          DISCORD_WEBHOOK_URL_TPE_FOREIGN: ${{ secrets.DISCORD_LANDING_TPE_FOREIGN}}
         run: python BotLanding.py
         
