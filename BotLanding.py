@@ -124,19 +124,25 @@ def get_routing_category(dest_text: str, reg_text: str) -> str:
 
 
 # ============================================================
-# 5. 圖片獨立請求模組 (取自 BOTLANDING)
+# 5. 圖片獨立請求模組 (修復 403 阻擋問題)
 # ============================================================
 def fetch_planespotters_image(registration: str) -> str | None:
     if not registration or registration == "未知": return None
     try:
         print(f"     [圖片] 正在向 PlaneSpotters 請求 {registration} 的兜底圖片...")
         url = f"https://api.planespotters.net/pub/photos/reg/{registration.strip()}"
-        clean_headers = {
+        
+        # 修正 403：使用更完整的擬真瀏覽器 Headers
+        spotter_headers = {
             "User-Agent": random.choice(USER_AGENTS),
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-            "Accept-Language": "en-US,en;q=0.5"
+            "Accept": "application/json, text/javascript, */*; q=0.01",
+            "Accept-Language": "zh-TW,zh;q=0.9,en-US;q=0.8,en;q=0.7",
+            "Referer": "https://www.planespotters.net/",
+            "Origin": "https://www.planespotters.net",
         }
-        res = requests.get(url, headers=clean_headers, timeout=5)
+        
+        time.sleep(0.3) # 避免過快請求被阻擋
+        res = requests.get(url, headers=spotter_headers, timeout=5)
         if res.status_code == 200:
             photos = res.json().get("photos", [])
             if photos:
@@ -168,7 +174,7 @@ def get_best_image_for_target(f_reg: str, fr_api_inst) -> str | None:
 
 
 # ============================================================
-# 6. FlightRadar24 擷取即時詳細資料 (整合 BOTLANDING 圖片抓取)
+# 6. FlightRadar24 擷取即時詳細資料
 # ============================================================
 def fetch_direct_clickhandler(fr_api_inst, flight_obj_or_id) -> dict | None:
     try:
@@ -202,15 +208,11 @@ def fetch_direct_clickhandler(fr_api_inst, flight_obj_or_id) -> dict | None:
         arr_ts = eta_ts or ata_ts or sta_ts
         eta_full = format_full_datetime(arr_ts)
 
-        # 抓取 FR24 內建圖片，若無則透過 PlaneSpotters 兜底 (BOTLANDING 邏輯)
         image_url = None
         images = ac.get("images") or {}
         large_images = images.get("large") or images.get("medium") or []
         if large_images and isinstance(large_images, list) and len(large_images) > 0:
             image_url = large_images[0].get("src")
-        
-        if not image_url and f_reg != "未知":
-            image_url = fetch_planespotters_image(f_reg)
 
         return {
             "origin": origin, "destination": destination,
@@ -277,6 +279,7 @@ def scan_taiwan_airport_schedules(unmatched_targets: list) -> dict:
     airports = ["TPE", "TSA", "KHH", "RMQ"]
     matched = {}
     query_ts = int(time.time()) - (2 * 3600)
+    current_ts = int(time.time())
 
     for apt in airports:
         url = f"https://api.flightradar24.com/common/v1/airport.json?code={apt}&plugin[]=schedule&plugin-setting[schedule][mode]=arrivals&plugin-setting[schedule][timestamp]={query_ts}&page=1&limit=150"
@@ -289,6 +292,11 @@ def scan_taiwan_airport_schedules(unmatched_targets: list) -> dict:
                 flight = arr.get("flight", {})
                 f_reg = flight.get("aircraft", {}).get("registration", "")
                 f_num = flight.get("identification", {}).get("number", {}).get("default", "")
+                arr_ts = flight.get("time", {}).get("scheduled", {}).get("arrival")
+
+                # 增加條件：預計抵達時間必須大於或等於目前時間
+                if arr_ts and int(arr_ts) < current_ts:
+                    continue
 
                 for t in unmatched_targets:
                     t_norm = normalize_target(t)
@@ -296,7 +304,6 @@ def scan_taiwan_airport_schedules(unmatched_targets: list) -> dict:
 
                     if t_norm == normalize_target(f_reg) or t_norm == normalize_target(f_num):
                         orig = flight.get("airport", {}).get("origin", {}).get("code", {}).get("iata", "未知")
-                        arr_ts = flight.get("time", {}).get("scheduled", {}).get("arrival")
                         eta_time_str = format_full_datetime(arr_ts)
                         
                         matched[t] = {
@@ -321,6 +328,7 @@ def scan_taiwan_airport_schedules(unmatched_targets: list) -> dict:
 # ============================================================
 def web_search_target(target_raw: str) -> dict | None:
     target_raw = target_raw.upper().strip()
+    current_ts = int(time.time())
 
     for fetch_by in ["reg", "flight"]:
         url = f"https://api.flightradar24.com/common/v1/flight/list.json?query={target_raw}&fetchBy={fetch_by}&page=1&limit=15"
@@ -331,7 +339,6 @@ def web_search_target(target_raw: str) -> dict | None:
             flights = res.json().get("result", {}).get("response", {}).get("data", [])
             if not flights: continue
 
-            current_ts = int(time.time())
             valid_flights = []
 
             for f in flights:
@@ -341,7 +348,10 @@ def web_search_target(target_raw: str) -> dict | None:
 
                 t_info = f.get("time", {})
                 arr_ts = t_info.get("estimated", {}).get("arrival") or t_info.get("scheduled", {}).get("arrival") or t_info.get("real", {}).get("arrival")
-                if arr_ts: valid_flights.append((f, int(arr_ts), dest))
+                
+                # 增加條件：抵達時間必須 >= 目前時間
+                if arr_ts and int(arr_ts) >= current_ts:
+                    valid_flights.append((f, int(arr_ts), dest))
 
             if not valid_flights: continue
 
@@ -476,6 +486,8 @@ def main():
         print(f"❌ 無法建立 FlightRadar24API：{e}")
         return
 
+    current_ts = int(time.time())
+
     # === 第一階段：Live 高速掃描 ===
     print("\n⚡ 第一階段：高速一次性 Live 掃描開始...")
     matched_dict, unmatched_targets = {}, []
@@ -485,6 +497,11 @@ def main():
     for target in TARGETS:
         flight, match_type = find_target_in_index(target, flight_index)
         if flight and (details := fetch_direct_clickhandler(fr_api_inst, flight)):
+            # 增加條件：抵達時間必須 >= 目前時間
+            arr_ts = details.get("arr_ts")
+            if arr_ts and int(arr_ts) < current_ts:
+                continue
+            
             res = build_result(target, flight, details, "📡 FR24 直播廣播")
             if res:
                 matched_dict[target] = res
@@ -516,7 +533,7 @@ def main():
     print(f" • 🛬 預計降落台灣：{len(taiwan_arrivals)} 架")
     print(f" • ⏱️ 本次總耗時：{time.time() - program_start:.2f} 秒\n" + "=" * 65)
 
-    # === 最終推播：確保每架降落台灣的飛機都抓到圖片 (使用 BOTLANDING 的 get_best_image_for_target) ===
+    # === 最終推播：檢查與獲取圖片 ===
     if taiwan_arrivals:
         print("\n🚨 發現預計降落台灣的目標，開始檢查與獲取圖片並準備推播...")
         for f in taiwan_arrivals:
