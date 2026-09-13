@@ -132,7 +132,6 @@ def fetch_planespotters_image(registration: str) -> str | None:
         print(f"     [圖片] 正在向 PlaneSpotters 請求 {registration} 的兜底圖片...")
         url = f"https://api.planespotters.net/pub/photos/reg/{registration.strip()}"
         
-        # 修正 403：必須使用標準的瀏覽器 User-Agent，並加入合法的 Referer 與 Accept 標頭
         spotter_headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
             "Accept": "application/json, text/plain, */*",
@@ -140,7 +139,8 @@ def fetch_planespotters_image(registration: str) -> str | None:
             "Referer": "https://www.planespotters.net/",
         }
         
-        time.sleep(0.5) # 避免連續請求過快被防火牆攔截
+        time.sleep(0.5)
+        # 增加 verify=True 或設定逾時防護
         res = requests.get(url, headers=spotter_headers, timeout=6)
         
         if res.status_code == 200:
@@ -149,29 +149,12 @@ def fetch_planespotters_image(registration: str) -> str | None:
             if photos:
                 return photos[0].get("thumbnail_large", {}).get("src") or photos[0].get("thumbnail", {}).get("src")
         else:
-            print(f"     [圖片] PlaneSpotters 拒絕請求，狀態碼: {res.status_code}")
+            print(f"     [圖片] PlaneSpotters 請求失敗，狀態碼: {res.status_code}")
+    except requests.exceptions.RequestException as e:
+        print(f"     [圖片] 獲取 {registration} 發生連線或憑證異常 (略過圖片): {e}")
     except Exception as e:
-        print(f"     [圖片] 獲取 {registration} 發生異常: {e}")
+        print(f"     [圖片] 獲取 {registration} 發生未知異常: {e}")
     return None
-
-def get_best_image_for_target(f_reg: str, fr_api_inst) -> str | None:
-    if not f_reg or f_reg == "未知": return None
-    try:
-        print(f"     [圖片] 正在向 FR24 尋找 {f_reg} 的官方高畫質圖片...")
-        history_url = f"https://api.flightradar24.com/common/v1/flight/list.json?query={f_reg}&fetchBy=reg&page=1&limit=3"
-        h_res = http_session.get(history_url, headers=get_headers(), timeout=5)
-        if h_res.status_code == 200:
-            for h_f in h_res.json().get("result", {}).get("response", {}).get("data", []):
-                flight_id = h_f.get("identification", {}).get("id")
-                if flight_id:
-                    details = fetch_direct_clickhandler(fr_api_inst, flight_id)
-                    if details and details.get("image_url"):
-                        print(f"     [圖片] 成功獲取 FR24 官方圖片！")
-                        return details["image_url"]
-                    break
-    except Exception:
-        pass
-    return fetch_planespotters_image(f_reg)
 
 
 # ============================================================
