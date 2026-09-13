@@ -205,18 +205,27 @@ def fetch_planespotters_image(registration: str) -> str | None:
 
         res = http_session.get(url, headers=headers, timeout=3)
 
+        print(f"     [圖片] PlaneSpotters 回應狀態碼：{res.status_code}")
+
         if res.status_code == 200:
             photos = res.json().get("photos", [])
 
-            if photos:
-                image_url = (
-                    photos[0].get("thumbnail_large", {}).get("src")
-                    or photos[0].get("thumbnail", {}).get("src")
-                )
+            if not photos:
+                print(f"     [圖片] PlaneSpotters 查無 {registration} 的照片資料")
+                return None
 
-                if image_url:
-                    print(f"     [圖片] ✅ PlaneSpotters 成功")
-                    return image_url
+            image_url = (
+                photos[0].get("thumbnail_large", {}).get("src")
+                or photos[0].get("thumbnail", {}).get("src")
+            )
+
+            if image_url:
+                print(f"     [圖片] ✅ PlaneSpotters 成功")
+                return image_url
+            else:
+                print(f"     [圖片] PlaneSpotters 回傳資料但無圖片連結")
+        else:
+            print(f"     [圖片] PlaneSpotters 回應內容：{res.text[:200]}")
 
     except Exception as e:
         print(f"     [圖片] PlaneSpotters 異常：{e}")
@@ -258,6 +267,8 @@ def get_best_image_for_target(f_reg: str, fr_api_inst) -> str | None:
             timeout=6
         )
 
+        print(f"     [圖片] FR24 查詢回應狀態碼：{h_res.status_code}")
+
         if h_res.status_code == 200:
 
             data = h_res.json()
@@ -268,6 +279,9 @@ def get_best_image_for_target(f_reg: str, fr_api_inst) -> str | None:
                 .get("response", {})
                 .get("data", [])
             )
+
+            if not flights:
+                print(f"     [圖片] FR24 查無 {f_reg} 的歷史航班資料")
 
             for h_f in flights:
 
