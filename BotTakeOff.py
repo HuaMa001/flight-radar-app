@@ -50,7 +50,7 @@ TARGETS = load_targets("targets.txt")
 
 
 # ============================================================
-# 2. HTTP Session (保持長連接與 Cookie，突破防護)
+# 2. HTTP Session (FR24 專用，避免與圖片抓取混淆)
 # ============================================================
 
 http_session = requests.Session()
@@ -60,7 +60,7 @@ http_session.mount("http://", adapter)
 
 
 # ============================================================
-# 3. Header (包含完整的瀏覽器特徵)
+# 3. Header
 # ============================================================
 
 USER_AGENTS = [
@@ -117,7 +117,7 @@ def check_is_taiwan(text_or_code: str) -> bool:
 
 
 # ============================================================
-# 5. PlaneSpotters 圖片兜底 (已還原為成功突破 Cloudflare 的寫法)
+# 5. PlaneSpotters 圖片兜底
 # ============================================================
 
 def fetch_planespotters_image(registration: str) -> str | None:
@@ -126,8 +126,11 @@ def fetch_planespotters_image(registration: str) -> str | None:
         
     try:
         url = f"https://api.planespotters.net/pub/photos/reg/{registration.strip()}"
-        # 使用完整的 get_headers() 與 http_session，偽裝成真實瀏覽器以通過防護
-        res = http_session.get(url, headers=get_headers(), timeout=5)
+        clean_headers = {
+            "User-Agent": random.choice(USER_AGENTS),
+            "Accept": "application/json"
+        }
+        res = requests.get(url, headers=clean_headers, timeout=5)
         if res.status_code == 200:
             photos = res.json().get("photos", [])
             if photos:
@@ -298,7 +301,6 @@ def scan_taiwan_airport_schedules(unmatched_targets: list, fr_api_inst) -> dict:
                         image_url = None
                         flight_id = flight.get("identification", {}).get("id")
                         
-                        # 核心修正：如果航班尚未起飛(無id)，透過歷史紀錄溯源獲取 FR24 官方美圖
                         if not flight_id and f_reg:
                             try:
                                 history_url = f"https://api.flightradar24.com/common/v1/flight/list.json?query={f_reg}&fetchBy=reg&page=1&limit=3"
@@ -311,7 +313,6 @@ def scan_taiwan_airport_schedules(unmatched_targets: list, fr_api_inst) -> dict:
                             except Exception:
                                 pass
                         
-                        # 解析抓到的 ID
                         if flight_id:
                             try:
                                 deep_details = fetch_direct_clickhandler(fr_api_inst, flight_id)
@@ -323,17 +324,19 @@ def scan_taiwan_airport_schedules(unmatched_targets: list, fr_api_inst) -> dict:
                         if not image_url and f_reg:
                             image_url = fetch_planespotters_image(f_reg)
                         
+                        dep_time_str = format_full_datetime(dep_ts)
                         matched[t] = {
                             "target": t, "f_num": f_num or t, "f_reg": f_reg or "未知",
                             "ac_code": flight.get("aircraft", {}).get("model", {}).get("code", "未知"),
                             "route": f"{apt} ➔ {dest}", 
-                            "dep_time": format_full_datetime(dep_ts), "dep_ts": dep_ts,
+                            "dep_time": dep_time_str, "dep_ts": dep_ts,
                             "is_taiwan_origin": True,
                             "is_future": bool(dep_ts and int(dep_ts) > int(time.time())),
                             "image_url": image_url,
                             "source": f"📅 機場時刻表 ({apt})"
                         }
-                        print(f"  └─ 🟢 [時刻表抓取] {t} -> {f_num} ({f_reg})")
+                        # 加入預計時間顯示
+                        print(f"  └─ 🟢 [時刻表抓取] {t} -> {f_num} ({apt} ➔ {dest}) | 🕒 {dep_time_str}")
         except Exception as e:
             print(f"⚠️ 讀取機場 {apt} 失敗: {e}")
             
@@ -411,7 +414,6 @@ def web_search_target(target_raw: str, fr_api_inst) -> dict | None:
             image_url = None
             flight_id = best_flight.get("identification", {}).get("id")
             
-            # 核心修正：若航班尚未起飛(無id)，透過歷史紀錄溯源獲取 FR24 官方美圖
             if not flight_id and f_reg != "未知":
                 try:
                     history_url = f"https://api.flightradar24.com/common/v1/flight/list.json?query={f_reg}&fetchBy=reg&page=1&limit=3"
@@ -424,7 +426,6 @@ def web_search_target(target_raw: str, fr_api_inst) -> dict | None:
                 except Exception:
                     pass
 
-            # 解析抓到的 ID
             if flight_id:
                 try:
                     deep_details = fetch_direct_clickhandler(fr_api_inst, flight_id)
@@ -524,7 +525,8 @@ def deep_scan_unmatched(unmatched_targets: list, fr_api_inst):
             try:
                 if res := future.result():
                     results[target] = res
-                    print(f"  └─ 🟢 [補查成功] {target} -> {res['f_num']} ({res['route']})")
+                    # 加入預計時間顯示
+                    print(f"  └─ 🟢 [補查成功] {target} -> {res['f_num']} ({res['route']}) | 🕒 {res['dep_time']}")
                 else:
                     print(f"  └─ ⚪ [無結果] {target}")
             except Exception as e:
@@ -592,7 +594,8 @@ def main():
             res = build_result(target, flight, details, "📡 FR24 直播廣播")
             if res:
                 matched_dict[target] = res
-                print(f"  └─ 🟢 {target} -> {res['f_num']} ({res['f_reg']}) [{match_type}]")
+                # 加入預計時間顯示
+                print(f"  └─ 🟢 [Live掃描] {target} -> {res['f_num']} ({res['route']}) | 🕒 {res['dep_time']}")
                 continue
         unmatched_targets.append(target)
     print(f"⚡ 第一階段完成 (找到 {len(matched_dict)} 架)")
