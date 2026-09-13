@@ -467,12 +467,16 @@ def deep_scan_unmatched(unmatched_targets: list):
 
 
 # ============================================================
-# 15. 最終篩選 (嚴格限制：現在 ~ 現在+10分鐘內)
+# 15. 最終篩選 (修改為：現在-10分鐘 <= 起飛時間 <= 現在+10分鐘)
 # ============================================================
 
-def filter_taiwan_departures(matched_dict: dict, minutes_ahead: int = 10):
-    now_ts = int(time.time()) - (minutes_ahead * 60)
-    limit_ts = now_ts + (minutes_ahead * 60)
+def filter_taiwan_departures(matched_dict: dict, minutes_ahead: int = 10, minutes_behind: int = 10):
+    now_ts = int(time.time())
+    
+    # 上限：現在 + 10 分鐘
+    upper_limit_ts = now_ts + (minutes_ahead * 60)
+    # 下限：現在 - 10 分鐘
+    lower_limit_ts = now_ts - (minutes_behind * 60)
 
     taiwan_departures = []
     
@@ -482,12 +486,15 @@ def filter_taiwan_departures(matched_dict: dict, minutes_ahead: int = 10):
             
         try:
             dep_ts = int(f.get("dep_ts", 0))
-            if now_ts <= dep_ts <= limit_ts: 
+            
+            # 放寬條件：包含過去 10 分鐘內，以及未來 10 分鐘內
+            if lower_limit_ts <= dep_ts <= upper_limit_ts: 
                 taiwan_departures.append(f)
                 
         except Exception:
             continue
             
+    # 依照起飛時間排序
     taiwan_departures.sort(key=lambda x: (x.get("dep_ts") or 0))
     return taiwan_departures
 
