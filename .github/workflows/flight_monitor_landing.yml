@@ -27,6 +27,9 @@ jobs:
 
       - name: 執行監控並推播
         env:
-          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_LANDING_TPE }}
+          DISCORD_WEBHOOK_URL_TPE: ${{ secrets.DISCORD_LANDING_TPE }}
+          DISCORD_WEBHOOK_URL_TSA: ${{ secrets.DISCORD_LANDING_TSA }}
+          DISCORD_WEBHOOK_URL_KHH: ${{ secrets.DISCORD_LANDING_KHH }}
+          DISCORD_WEBHOOK_URL_ELSE: ${{ secrets.DISCORD_LANDING_ELSE }}
         run: python BotLanding.py
         
